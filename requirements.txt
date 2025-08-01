@@ -1,6 +1,3 @@
-ipykernel
-openai
+streamlit
 python-dotenv
-yfinance
-pandas
-matplotlibpip
+openai==1.55.3

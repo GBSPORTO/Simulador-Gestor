@@ -1,3 +1,13 @@
+# rpg_gestor.py
+import streamlit as st
+import openai
+import time
+import streamlit_authenticator as stauth
+from streamlit_authenticator.utilities.hasher import Hasher
+import database as db
+from dotenv import load_dotenv, find_dotenv
+import os
+import logging
 
 # --- CONFIGURAÇÃO DE LOGGING ---
 logging.basicConfig(level=logging.INFO)

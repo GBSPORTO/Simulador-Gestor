@@ -22,8 +22,6 @@ else:
         st.stop()
 
 ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
-# --- ALTERAÇÃO: Defina aqui o modelo para a avaliação ---
-# Para consistência, use o mesmo modelo de base que o seu assistente (ASSISTANT_ID) utiliza.
 EVALUATION_MODEL = "gpt-4o"
 
 db.init_db()
@@ -35,7 +33,7 @@ authenticator = stauth.Authenticate(
     30
 )
 
-# --- FUNÇÃO DE AVALIAÇÃO AUTOMÁTICA (Atualizada) ---
+# --- FUNÇÃO DE AVALIAÇÃO AUTOMÁTICA ---
 def evaluate_user_response(username, conversation_history, client):
     """
     Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
@@ -56,7 +54,7 @@ def evaluate_user_response(username, conversation_history, client):
 
     try:
         response = client.chat.completions.create(
-            model=EVALUATION_MODEL, # Usa a variável de configuração definida no topo
+            model=EVALUATION_MODEL,
             messages=eval_prompt,
             max_tokens=5,
             temperature=0
@@ -78,10 +76,16 @@ choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
 
 # --- PÁGINA DE LOGIN ---
 if choice == 'Login':
-    authenticator.login('main')
+    # --- ALTERAÇÃO: Captura explícita dos valores de retorno do login ---
+    name, authentication_status, username = authenticator.login('main')
 
-    if st.session_state["authentication_status"]:
-        username = st.session_state['username']
+    # Usa a variável 'authentication_status' retornada pela função
+    if authentication_status:
+        # Define manualmente o estado da sessão para garantir consistência
+        st.session_state['name'] = name
+        st.session_state['username'] = username
+        st.session_state['authentication_status'] = authentication_status
+        
         authenticator.logout('Logout', 'sidebar')
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         
@@ -133,9 +137,9 @@ if choice == 'Login':
             db.add_message_to_history(username, "assistant", response)
             st.rerun()
 
-    elif st.session_state["authentication_status"] is False:
+    elif authentication_status is False:
         st.error('Usuário ou senha incorretos')
-    elif st.session_state["authentication_status"] is None:
+    elif authentication_status is None:
         st.warning('Por favor, insira seu usuário e senha')
 
 # --- PÁGINA DE REGISTRO ---
@@ -161,3 +165,4 @@ elif choice == 'Registrar':
                     st.error("As senhas não coincidem ou estão em branco.")
     except Exception as e:
         st.error(f"Ocorreu um erro durante o registro: {e}")
+

@@ -41,7 +41,7 @@ def get_user_conversation_history(username):
         return []
 
 def generate_subjective_analysis(username, user_stats, user_messages, client):
-    """Gera análise subjetiva usando IA"""
+    """Gera análise subjetiva usando seu Assistant da OpenAI"""
     if not client or not user_messages:
         return "Análise subjetiva não disponível."
     
@@ -50,50 +50,79 @@ def generate_subjective_analysis(username, user_stats, user_messages, client):
         total_decisions = user_stats.get('total_decisoes', 0)
         accuracy = user_stats.get('taxa_acerto', 0)
         
-        # Prepara prompt para análise
+        # Prepara as últimas respostas do usuário
         recent_responses = "\n".join([f"- {msg}" for msg in user_messages[-10:]])
         
-        system_prompt = f"""
-        Você é um especialista em análise de comportamento de liderança e gestão. 
-        Analise as respostas de um usuário em um simulador de casos de gestão e forneça insights qualitativos sobre seu perfil de liderança.
+        # Prompt específico para análise subjetiva usando seu Assistant
+        analysis_prompt = f"""
+        Por favor, analise o perfil de liderança do usuário "{username}" baseado em suas interações no simulador.
         
-        DADOS DO USUÁRIO:
-        - Nome: {username}
-        - Total de decisões: {total_decisions}
+        DADOS QUANTITATIVOS:
+        - Total de decisões tomadas: {total_decisions}
         - Taxa de acerto: {accuracy:.1f}%
         
-        ÚLTIMAS RESPOSTAS NO SIMULADOR:
+        ÚLTIMAS 10 RESPOSTAS DO USUÁRIO:
         {recent_responses}
         
-        Forneça uma análise estruturada seguindo este formato:
+        Forneça uma análise SUBJETIVA e QUALITATIVA estruturada no seguinte formato:
         
         ## 🎯 PERFIL DE LIDERANÇA
-        [Identifique o estilo de liderança predominante]
+        [Identifique o estilo de liderança predominante baseado nas respostas]
         
-        ## 💪 PONTOS FORTES
-        [3-4 pontos fortes identificados nas respostas]
+        ## 💪 PONTOS FORTES OBSERVADOS
+        [Liste 3-4 pontos fortes identificados nas decisões e respostas]
         
         ## 🔄 ÁREAS DE DESENVOLVIMENTO
-        [2-3 áreas que podem ser aprimoradas]
+        [Indique 2-3 áreas que podem ser aprimoradas]
         
-        ## 📈 PADRÃO DE DECISÃO
-        [Analise como o usuário toma decisões - é impulsivo, analítico, colaborativo?]
+        ## 📈 PADRÃO DE TOMADA DE DECISÃO
+        [Analise como este usuário costuma tomar decisões - é analítico, impulsivo, colaborativo, etc?]
         
-        ## 🎓 RECOMENDAÇÕES ESPECÍFICAS
-        [Sugestões práticas para desenvolvimento]
+        ## 🎓 RECOMENDAÇÕES PERSONALIZADAS
+        [Dê sugestões específicas para desenvolvimento baseadas no perfil identificado]
         
-        Seja específico, construtivo e profissional. Base sua análise nas respostas reais fornecidas.
-        Limite a análise a 800 palavras no total.
+        Base sua análise exclusivamente nas respostas reais fornecidas. Seja construtivo, específico e profissional.
+        Máximo de 800 palavras.
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": system_prompt}],
-            max_tokens=1200,
-            temperature=0.7
+        # Cria thread para análise (ou use thread existente se preferir)
+        thread = client.beta.threads.create()
+        
+        # Adiciona mensagem à thread
+        client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=analysis_prompt
         )
         
-        return response.choices[0].message.content
+        # Executa o Assistant (use seu ASSISTANT_ID aqui)
+        ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"  # Seu Assistant ID
+        
+        run = client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=ASSISTANT_ID
+        )
+        
+        # Aguarda conclusão
+        import time
+        while run.status in ['queued', 'in_progress', 'cancelling']:
+            time.sleep(1)
+            run = client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+        
+        if run.status == 'completed':
+            # Busca a resposta
+            messages = client.beta.threads.messages.list(
+                thread_id=thread.id
+            )
+            
+            # Pega a última mensagem (resposta do Assistant)
+            assistant_response = messages.data[0].content[0].text.value
+            return assistant_response
+        else:
+            return f"Erro na execução do Assistant: {run.status}"
         
     except Exception as e:
         return f"Erro ao gerar análise subjetiva: {e}"

@@ -22,10 +22,21 @@ else:
         st.stop()
 
 ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
-EVALUATION_MODEL = "gpt-4o"
 
 db.init_db()
+
+# --- CORREÇÃO: Lógica para recarregar credenciais após o registo ---
+# Carrega as credenciais do banco de dados. Esta é a fonte da verdade.
 credentials = db.get_user_credentials()
+
+# Se um registo acabou de acontecer, o estado da sessão terá esta flag.
+# Forçamos a recriação do autenticador com as novas credenciais.
+if 'just_registered' in st.session_state and st.session_state['just_registered']:
+    # Limpa a flag para não entrar neste loop novamente
+    del st.session_state['just_registered']
+    # Recarrega as credenciais para garantir que o novo usuário está incluído
+    credentials = db.get_user_credentials()
+
 authenticator = stauth.Authenticate(
     credentials,
     'mestre_gestor_cookie',
@@ -76,12 +87,9 @@ choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
 
 # --- PÁGINA DE LOGIN ---
 if choice == 'Login':
-    # --- ALTERAÇÃO: Captura explícita dos valores de retorno do login ---
     name, authentication_status, username = authenticator.login('main')
 
-    # Usa a variável 'authentication_status' retornada pela função
     if authentication_status:
-        # Define manualmente o estado da sessão para garantir consistência
         st.session_state['name'] = name
         st.session_state['username'] = username
         st.session_state['authentication_status'] = authentication_status
@@ -158,11 +166,14 @@ elif choice == 'Registrar':
                 if new_password == confirm_password and new_password != "":
                     hashed_password = Hasher([new_password]).generate()[0]
                     if db.add_user(new_username, new_name, new_email, hashed_password):
-                        st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")
+                        st.success("Usuário registrado com sucesso! Por favor, volte para a tela de Login.")
+                        # --- CORREÇÃO: Define a flag para forçar a recarga na próxima execução ---
+                        st.session_state['just_registered'] = True
+                        time.sleep(2) # Dá tempo para o usuário ler a mensagem
+                        st.rerun() # Força a reexecução do script
                     else:
                         st.error("Nome de usuário ou e-mail já existe.")
                 else:
                     st.error("As senhas não coincidem ou estão em branco.")
     except Exception as e:
         st.error(f"Ocorreu um erro durante o registro: {e}")
-

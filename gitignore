@@ -1,0 +1,8 @@
+# Ignorar o arquivo de variáveis de ambiente
+.env
+
+# Ignorar o arquivo do banco de dados
+*.db
+
+# Ignorar arquivos de cache do Python
+__pycache__/

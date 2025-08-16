@@ -1,82 +1,143 @@
 import streamlit as st
 import openai
+import time
+import streamlit_authenticator as stauth
+import database as db
 from dotenv import load_dotenv, find_dotenv
 import os
-import time
 
-# Carrega as variáveis de ambiente do arquivo .env
-_=load_dotenv(find_dotenv())
-client = openai.Client()
+# --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
+# Carrega variáveis de ambiente (sua chave da OpenAI)
+load_dotenv(find_dotenv())
 api_key = os.getenv("OPENAI_API_KEY")
+if api_key:
+    client = openai.Client(api_key=api_key)
+else:
+    st.error("Chave de API da OpenAI não encontrada. Crie um arquivo .env ou configure nos segredos do Streamlit.")
 
-# ID do seu assistente específico
+# ID do seu assistente
 ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
 
-# --- INÍCIO DAS ALTERAÇÕES ---
+# Inicializa o banco de dados
+db.init_db()
 
-# MUDANÇA 1: Inicializa o histórico de mensagens e o thread no estado da sessão
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Carrega as credenciais do banco de dados para o autenticador
+credentials = db.get_user_credentials()
+authenticator = stauth.Authenticate(
+    credentials,
+    'mestre_gestor_cookie',
+    'mestre_gestor_key',
+    30
+)
 
-if "thread_id" not in st.session_state:
+# --- NAVEGAÇÃO E PÁGINAS ---
+choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
+
+# --- PÁGINA DE LOGIN ---
+if choice == 'Login':
+    authenticator.login('main')
+
+    if st.session_state["authentication_status"]:
+        # --- SE O LOGIN FOR BEM-SUCEDIDO, MOSTRA O CHAT ---
+        username = st.session_state['username']
+        
+        authenticator.logout('Logout', 'sidebar')
+        st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
+        
+        # Carrega ou cria a thread do usuário
+        if "thread_id" not in st.session_state:
+            st.session_state.thread_id = db.get_or_create_thread_id(username, client)
+        
+        # Carrega o histórico de mensagens do usuário
+        if "messages" not in st.session_state:
+            st.session_state.messages = db.get_user_history(username)
+
+        st.title("Simulador Gestor - Assistente de casos")
+
+        # Exibe o histórico de mensagens
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        # Input do usuário
+        if prompt := st.chat_input("Vamos iniciar a simulação, digite algo para começar:"):
+            # Adiciona e salva a mensagem do usuário
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            db.add_message_to_history(username, "user", prompt)
+
+            # Exibe a resposta do assistente com streaming
+            with st.chat_message("assistant"):
+                # Função geradora para o streaming
+                def stream_generator():
+                    with client.beta.threads.runs.stream(
+                        thread_id=st.session_state.thread_id,
+                        assistant_id=ASSISTANT_ID,
+                    ) as stream:
+                        for text in stream.text_deltas:
+                            yield text
+                            time.sleep(0.01)
+                
+                # Adiciona a mensagem do usuário à thread antes de executar o stream
+                client.beta.threads.messages.create(
+                    thread_id=st.session_state.thread_id,
+                    role="user",
+                    content=prompt
+                )
+                
+                response = st.write_stream(stream_generator)
+
+            # Adiciona e salva a resposta completa do assistente
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            db.add_message_to_history(username, "assistant", response)
+            
+            # Força o rerender para mostrar os botões de feedback
+            st.rerun()
+
+        # --- BOTÕES DE FEEDBACK ---
+        # Só mostra os botões se a última mensagem for do assistente
+        if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+            st.divider()
+            st.write("A resposta do assistente foi útil?")
+            col1, col2 = st.columns(2)
+            if col1.button("Sim, foi um acerto 👍"):
+                db.log_user_action(username, "avaliacao_resposta", "acerto")
+                st.success("Feedback registrado!")
+                time.sleep(1)
+                st.rerun()
+
+            if col2.button("Não, foi um erro 👎"):
+                db.log_user_action(username, "avaliacao_resposta", "erro")
+                st.error("Feedback registrado.")
+                time.sleep(1)
+                st.rerun()
+
+    elif st.session_state["authentication_status"] is False:
+        st.error('Usuário ou senha incorretos')
+    elif st.session_state["authentication_status"] is None:
+        st.warning('Por favor, insira seu usuário e senha')
+
+# --- PÁGINA DE REGISTRO ---
+elif choice == 'Registrar':
+    st.title("Crie sua Conta")
     try:
-        thread = client.beta.threads.create()
-        st.session_state.thread_id = thread.id
+        with st.form("register_form"):
+            new_name = st.text_input("Nome Completo")
+            new_email = st.text_input("E-mail")
+            new_username = st.text_input("Nome de Usuário")
+            new_password = st.text_input("Senha", type="password")
+            confirm_password = st.text_input("Confirme a Senha", type="password")
+            submitted = st.form_submit_button("Registrar")
+
+            if submitted:
+                if new_password == confirm_password and new_password != "":
+                    hashed_password = stauth.Hasher([new_password]).generate()[0]
+                    if db.add_user(new_username, new_name, new_email, hashed_password):
+                        st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")
+                    else:
+                        st.error("Nome de usuário ou e-mail já existe.")
+                else:
+                    st.error("As senhas não coincidem ou estão em branco.")
     except Exception as e:
-        st.error(f"Erro ao criar a thread da OpenAI: {e}")
-        st.stop()
-
-# Função para gerar a resposta com streaming
-def obter_resposta_openai(pergunta, thread_id):
-    """
-    Função para enviar a pergunta para o Assistant e gerar a resposta via streaming.
-    """
-    if not api_key:
-        st.error("Chave de API da OpenAI não encontrada. Verifique seu arquivo .env")
-        return
-
-    try:
-        # Adiciona a mensagem do usuário à thread
-        client.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=pergunta
-        )
-
-        # Usa a helper 'stream' para criar o run e lidar com os eventos
-        with client.beta.threads.runs.stream(
-            thread_id=thread_id,
-            assistant_id=ASSISTANT_ID,
-        ) as stream:
-            for text in stream.text_deltas:
-                yield text
-                time.sleep(0.01) # Pequeno delay para melhorar a fluidez da exibição
-
-    except Exception as e:
-        st.error(f"Ocorreu um erro ao contatar a API da OpenAI: {e}")
-
-# --- FIM DAS ALTERAÇÕES ---
-
-# Configura o título da página e o layout
-st.set_page_config(page_title="Mestre Gestor", layout="wide")
-st.title("Simulador Gestor - Assistente de casos")
-
-# MUDANÇA 2: Exibe o histórico do chat
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Área para o usuário digitar a pergunta (usando st.chat_input)
-if prompt := st.chat_input("Vamos iniciar a simulação, digite algo para começar:"):
-    # Adiciona a mensagem do usuário ao histórico e exibe na tela
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Exibe a resposta do assistente usando o modo de streaming
-    with st.chat_message("assistant"):
-        # st.write_stream lida com o gerador e exibe o conteúdo em tempo real
-        response = st.write_stream(obter_resposta_openai(prompt, st.session_state.thread_id))
-
-    # Adiciona a resposta completa do assistente ao histórico
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        st.error(e)

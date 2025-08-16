@@ -1,5 +1,5 @@
 """
-Database module for RPG Gestor Simulator
+Database module for RPG Gestor Simulator - VERSÃO CORRIGIDA
 Handles all database operations including user management, message history, and user actions.
 """
 
@@ -7,6 +7,8 @@ import sqlite3
 import pandas as pd
 import os
 from datetime import datetime
+import hashlib
+import streamlit as st
 
 # Configurações do banco de dados
 DB_FILE = 'simulador_gestor.db'
@@ -111,6 +113,43 @@ def init_db():
         print(f"❌ Erro ao inicializar banco de dados: {e}")
         return False
 
+def debug_user_data(username=None):
+    """
+    Função de debug para verificar dados dos usuários
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+            
+        cursor = conn.cursor()
+        
+        if username:
+            cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+            print(f"\n🔍 DEBUG - Dados do usuário '{username}':")
+        else:
+            cursor.execute('SELECT * FROM users')
+            print(f"\n🔍 DEBUG - Todos os usuários:")
+        
+        results = cursor.fetchall()
+        
+        if not results:
+            print("   ❌ Nenhum usuário encontrado")
+        else:
+            for row in results:
+                print(f"   👤 Username: {row['username']}")
+                print(f"      Nome: {row['name']}")
+                print(f"      Email: {row['email']}")
+                print(f"      Hash: {row['hashed_password'][:20]}...")
+                print(f"      Criado: {row['created_at']}")
+                print(f"      Último login: {row['last_login']}")
+                print("   " + "-" * 40)
+        
+        conn.close()
+        
+    except Exception as e:
+        print(f"❌ Erro no debug: {e}")
+
 def get_user_credentials():
     """
     Obtém credenciais de todos os usuários para o sistema de autenticação
@@ -119,6 +158,7 @@ def get_user_credentials():
     try:
         conn = get_db_connection()
         if not conn:
+            print("❌ Falha na conexão com banco para credenciais")
             return {'usernames': {}}
             
         cursor = conn.cursor()
@@ -126,7 +166,10 @@ def get_user_credentials():
         results = cursor.fetchall()
         conn.close()
         
+        print(f"🔍 get_user_credentials: Encontrados {len(results)} usuários")
+        
         if not results:
+            print("⚠️  Nenhum usuário encontrado no banco")
             return {'usernames': {}}
         
         credentials = {'usernames': {}}
@@ -136,13 +179,14 @@ def get_user_credentials():
             credentials['usernames'][username] = {
                 'name': row['name'],
                 'email': row['email'],
-                'password': row['hashed_password']
+                'password': row['hashed_password']  # Já deve estar hasheado
             }
+            print(f"   ✅ Carregado: {username} ({row['name']})")
         
         return credentials
         
     except Exception as e:
-        print(f"Erro ao buscar credenciais: {e}")
+        print(f"❌ Erro ao buscar credenciais: {e}")
         return {'usernames': {}}
 
 def add_user(username, name, email, hashed_password):
@@ -152,9 +196,15 @@ def add_user(username, name, email, hashed_password):
     try:
         conn = get_db_connection()
         if not conn:
+            print("❌ Falha na conexão com banco para adicionar usuário")
             return False
             
         cursor = conn.cursor()
+        
+        print(f"🔍 Tentando adicionar usuário: {username}")
+        print(f"   Nome: {name}")
+        print(f"   Email: {email}")
+        print(f"   Hash: {hashed_password[:20]}...")
         
         cursor.execute('''
             INSERT INTO users (username, name, email, hashed_password) 
@@ -169,10 +219,73 @@ def add_user(username, name, email, hashed_password):
         
     except sqlite3.IntegrityError as e:
         if "UNIQUE constraint failed" in str(e):
-            print(f"❌ Usuário ou email já existe: {username}")
+            if "username" in str(e):
+                print(f"❌ Username já existe: {username}")
+            elif "email" in str(e):
+                print(f"❌ Email já existe: {email}")
+            else:
+                print(f"❌ Constraint única violada: {e}")
         return False
     except Exception as e:
         print(f"❌ Erro ao adicionar usuário {username}: {e}")
+        return False
+
+def verify_user_password(username, password):
+    """
+    Verifica se a senha do usuário está correta
+    Função para debug de autenticação
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+            
+        cursor = conn.cursor()
+        cursor.execute('SELECT hashed_password FROM users WHERE username = ?', (username,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            print(f"❌ Usuário '{username}' não encontrado")
+            return False
+        
+        stored_hash = result['hashed_password']
+        
+        # Se a senha armazenada não parece ser um hash, compare diretamente
+        if len(stored_hash) < 32:  # Provavelmente texto plano
+            print(f"⚠️  Senha em texto plano detectada para {username}")
+            return password == stored_hash
+        
+        # Tenta diferentes métodos de hash
+        import hashlib
+        
+        # MD5
+        md5_hash = hashlib.md5(password.encode()).hexdigest()
+        if md5_hash == stored_hash:
+            print(f"✅ Login MD5 válido para {username}")
+            return True
+        
+        # SHA256
+        sha256_hash = hashlib.sha256(password.encode()).hexdigest()
+        if sha256_hash == stored_hash:
+            print(f"✅ Login SHA256 válido para {username}")
+            return True
+        
+        # SHA1
+        sha1_hash = hashlib.sha1(password.encode()).hexdigest()
+        if sha1_hash == stored_hash:
+            print(f"✅ Login SHA1 válido para {username}")
+            return True
+        
+        print(f"❌ Senha incorreta para {username}")
+        print(f"   Hash armazenado: {stored_hash[:20]}...")
+        print(f"   MD5 tentado: {md5_hash[:20]}...")
+        print(f"   SHA256 tentado: {sha256_hash[:20]}...")
+        
+        return False
+        
+    except Exception as e:
+        print(f"❌ Erro na verificação de senha: {e}")
         return False
 
 def update_last_login(username):
@@ -191,11 +304,16 @@ def update_last_login(username):
             WHERE username = ?
         ''', (username,))
         
+        if cursor.rowcount > 0:
+            print(f"✅ Último login atualizado para {username}")
+        else:
+            print(f"❌ Usuário {username} não encontrado para atualizar login")
+        
         conn.commit()
         conn.close()
         
     except Exception as e:
-        print(f"Erro ao atualizar último login: {e}")
+        print(f"❌ Erro ao atualizar último login: {e}")
 
 def get_user_history(username):
     """
@@ -228,7 +346,7 @@ def get_user_history(username):
         return messages
         
     except Exception as e:
-        print(f"Erro ao buscar histórico do usuário {username}: {e}")
+        print(f"❌ Erro ao buscar histórico do usuário {username}: {e}")
         return []
 
 def add_message_to_history(username, role, content):
@@ -251,7 +369,7 @@ def add_message_to_history(username, role, content):
         return True
         
     except Exception as e:
-        print(f"Erro ao adicionar mensagem para {username}: {e}")
+        print(f"❌ Erro ao adicionar mensagem para {username}: {e}")
         return False
 
 def clear_user_history(username):
@@ -273,7 +391,7 @@ def clear_user_history(username):
         return True
         
     except Exception as e:
-        print(f"Erro ao limpar histórico do usuário {username}: {e}")
+        print(f"❌ Erro ao limpar histórico do usuário {username}: {e}")
         return False
 
 def log_user_action(username, action_type, action_data, metadata=None):
@@ -296,7 +414,7 @@ def log_user_action(username, action_type, action_data, metadata=None):
         return True
         
     except Exception as e:
-        print(f"Erro ao registrar ação do usuário {username}: {e}")
+        print(f"❌ Erro ao registrar ação do usuário {username}: {e}")
         return False
 
 def get_or_create_thread_id(username, client):
@@ -338,7 +456,7 @@ def get_or_create_thread_id(username, client):
         return thread_id
         
     except Exception as e:
-        print(f"Erro ao obter/criar thread para {username}: {e}")
+        print(f"❌ Erro ao obter/criar thread para {username}: {e}")
         # Fallback: cria thread temporária
         try:
             thread = client.beta.threads.create()
@@ -368,7 +486,7 @@ def get_all_user_actions():
         return df
         
     except Exception as e:
-        print(f"Erro ao buscar ações dos usuários: {e}")
+        print(f"❌ Erro ao buscar ações dos usuários: {e}")
         return pd.DataFrame(columns=['username', 'action_data', 'timestamp', 'action_type', 'metadata'])
 
 def get_all_user_evaluations():
@@ -417,7 +535,7 @@ def get_all_user_evaluations():
         return user_stats
         
     except Exception as e:
-        print(f"Erro ao obter avaliações dos usuários: {e}")
+        print(f"❌ Erro ao obter avaliações dos usuários: {e}")
         return []
 
 def get_user_performance_summary(username):
@@ -463,7 +581,7 @@ def get_user_performance_summary(username):
         return None
         
     except Exception as e:
-        print(f"Erro ao obter resumo de performance para {username}: {e}")
+        print(f"❌ Erro ao obter resumo de performance para {username}: {e}")
         return None
 
 def cleanup_old_data(days=30):
@@ -498,7 +616,7 @@ def cleanup_old_data(days=30):
         return True
         
     except Exception as e:
-        print(f"Erro na limpeza de dados: {e}")
+        print(f"❌ Erro na limpeza de dados: {e}")
         return False
 
 def get_database_stats():
@@ -538,10 +656,9 @@ def get_database_stats():
         return stats
         
     except Exception as e:
-        print(f"Erro ao obter estatísticas do banco: {e}")
+        print(f"❌ Erro ao obter estatísticas do banco: {e}")
         return None
 
-# Função de teste para verificar se o banco está funcionando
 def test_database():
     """
     Testa as funções básicas do banco de dados
@@ -566,9 +683,35 @@ def test_database():
     creds = get_user_credentials()
     print(f"✅ Credenciais: {len(creds.get('usernames', {}))} usuários encontrados")
     
+    # Debug dos usuários
+    debug_user_data()
+    
     print("🎯 Teste do banco de dados concluído!")
     return True
+
+def test_login_flow(username, password):
+    """
+    Testa o fluxo completo de login
+    """
+    print(f"\n🧪 Testando login para: {username}")
+    
+    # Verifica se usuário existe
+    debug_user_data(username)
+    
+    # Testa verificação de senha
+    result = verify_user_password(username, password)
+    
+    if result:
+        print(f"✅ Login bem-sucedido para {username}")
+        update_last_login(username)
+    else:
+        print(f"❌ Falha no login para {username}")
+    
+    return result
 
 # Executa teste se rodado diretamente
 if __name__ == "__main__":
     test_database()
+    
+    # Teste de login se necessário
+    # test_login_flow("seu_usuario", "sua_senha")

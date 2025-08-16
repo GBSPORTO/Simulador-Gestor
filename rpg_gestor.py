@@ -34,15 +34,7 @@ client = init_openai_client()
 db.init_db()
 
 # --- FUNÇÕES AUXILIARES ---
-def create_authenticator():
-    """Cria o autenticador com as credenciais atuais do banco de dados."""
-    credentials = db.get_user_credentials()
-    return stauth.Authenticate(
-        credentials,
-        'mestre_gestor_cookie',
-        'mestre_gestor_key',
-        30
-    )
+# A função create_authenticator foi removida para ser chamada diretamente no main()
 
 def evaluate_user_response_background(username, conversation_history, client):
     """Usa um modelo de IA para avaliar a resposta do usuário em background."""
@@ -75,27 +67,21 @@ def show_chat_interface(username):
     st.title("🎯 Simulador de Casos - Treinamento")
     st.markdown("---")
     
-    # Inicializa o estado da sessão para o chat
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = db.get_or_create_thread_id(username, client)
     if "messages" not in st.session_state:
         st.session_state.messages = db.get_user_history(username)
 
-    # Exibe o histórico de mensagens
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
-    # Input do usuário
     if prompt := st.chat_input("Digite sua resposta para continuar a simulação:"):
-        # Adiciona e salva a mensagem do usuário
         st.session_state.messages.append({"role": "user", "content": prompt})
         db.add_message_to_history(username, "user", prompt)
         
-        # Avalia a resposta em background
         evaluate_user_response_background(username, st.session_state.messages, client)
         
-        # Gera a resposta do assistente
         with st.chat_message("assistant"):
             try:
                 client.beta.threads.messages.create(
@@ -113,7 +99,6 @@ def show_chat_interface(username):
                             time.sleep(0.01)
                 response = st.write_stream(stream_generator)
                 
-                # Salva a resposta do assistente
                 if response:
                     st.session_state.messages.append({"role": "assistant", "content": response})
                     db.add_message_to_history(username, "assistant", response)
@@ -132,7 +117,6 @@ def show_dashboard():
         st.info("📝 Ainda não há dados de avaliação disponíveis.")
         return
     
-    # Métricas gerais
     col1, col2, col3, col4 = st.columns(4)
     total_decisions = sum(user['total_decisions'] for user in user_stats)
     total_hits = sum(user['acertos'] for user in user_stats)
@@ -149,7 +133,6 @@ def show_dashboard():
     
     st.markdown("---")
     
-    # Tabela de usuários
     st.subheader("📈 Performance por Usuário")
     df_data = []
     for user in user_stats:
@@ -166,7 +149,6 @@ def show_dashboard():
     df = pd.DataFrame(df_data)
     st.dataframe(df, use_container_width=True)
     
-    # Gráficos
     if len(df_data) > 0 and total_decisions > 0:
         st.markdown("---")
         st.subheader("📊 Visualizações")
@@ -185,7 +167,15 @@ def show_dashboard():
 def main():
     st.set_page_config(page_title="Simulador de Casos", page_icon="🎯", layout="wide")
     
-    authenticator = create_authenticator()
+    # --- CORREÇÃO: Cria o autenticador a cada execução ---
+    # Isto garante que ele sempre tem a lista de usuários mais recente do banco de dados.
+    credentials = db.get_user_credentials()
+    authenticator = stauth.Authenticate(
+        credentials,
+        'mestre_gestor_cookie',
+        'mestre_gestor_key',
+        30
+    )
     
     # Se o usuário já estiver logado
     if st.session_state.get("authentication_status"):
@@ -193,7 +183,6 @@ def main():
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         st.sidebar.markdown("---")
         
-        # Menu principal após login
         page_choice = st.sidebar.selectbox(
             "Escolha uma opção:",
             ['🎯 Simulação', '📊 Dashboard'],
@@ -242,9 +231,7 @@ def main():
                         if db.add_user(new_username, new_name, new_email, hashed_password):
                             st.success("✅ Usuário registrado com sucesso! Por favor, faça o login.")
                             time.sleep(2)
-                            # Limpa o cache para que o autenticador recarregue as credenciais
-                            st.cache_resource.clear()
-                            st.rerun()
+                            st.rerun() # Apenas faz o rerun para limpar o formulário e mostrar a tela de login
                         else:
                             st.error("❌ Nome de usuário ou e-mail já existe.")
 

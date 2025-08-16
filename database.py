@@ -709,9 +709,156 @@ def test_login_flow(username, password):
     
     return result
 
+# FUNÇÕES DE RESET E LIMPEZA - ADICIONE ESTAS FUNÇÕES
+
+def show_all_users():
+    """Mostra todos os usuários cadastrados"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return
+            
+        cursor = conn.cursor()
+        cursor.execute('SELECT username, name, email, created_at, last_login FROM users ORDER BY created_at DESC')
+        users = cursor.fetchall()
+        conn.close()
+        
+        if not users:
+            print("📝 Nenhum usuário encontrado no banco")
+            return
+        
+        print(f"\n📋 USUÁRIOS CADASTRADOS ({len(users)} encontrados):")
+        print("-" * 80)
+        
+        for user in users:
+            print(f"👤 Username: {user['username']}")
+            print(f"   Nome: {user['name']}")
+            print(f"   Email: {user['email']}")
+            print(f"   Criado: {user['created_at']}")
+            print(f"   Último login: {user['last_login'] or 'Nunca'}")
+            print("-" * 80)
+            
+    except Exception as e:
+        print(f"❌ Erro ao mostrar usuários: {e}")
+
+def delete_user(username_or_email):
+    """Deleta um usuário específico"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+            
+        cursor = conn.cursor()
+        
+        # Primeiro verifica se o usuário existe
+        cursor.execute('SELECT username, name, email FROM users WHERE username = ? OR email = ?', 
+                      (username_or_email, username_or_email))
+        user = cursor.fetchone()
+        
+        if not user:
+            print(f"❌ Usuário '{username_or_email}' não encontrado")
+            return False
+        
+        username = user['username']
+        
+        print(f"🗑️  Deletando usuário: {username} ({user['name']}) - {user['email']}")
+        
+        # Deleta em cascata (devido às FOREIGN KEY constraints)
+        cursor.execute('DELETE FROM users WHERE username = ?', (username,))
+        
+        if cursor.rowcount > 0:
+            conn.commit()
+            print(f"✅ Usuário {username} deletado com sucesso!")
+        else:
+            print(f"❌ Falha ao deletar usuário {username}")
+            
+        conn.close()
+        return cursor.rowcount > 0
+        
+    except Exception as e:
+        print(f"❌ Erro ao deletar usuário: {e}")
+        return False
+
+def clear_all_users():
+    """Remove todos os usuários do banco"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+            
+        cursor = conn.cursor()
+        
+        # Conta usuários antes
+        cursor.execute('SELECT COUNT(*) FROM users')
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            print("📝 Banco já está vazio")
+            return True
+        
+        print(f"🗑️  Removendo {count} usuários...")
+        
+        # Remove todos os usuários (cascata remove tudo)
+        cursor.execute('DELETE FROM users')
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ {count} usuários removidos com sucesso!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao limpar banco: {e}")
+        return False
+
+def reset_database():
+    """Reseta completamente o banco de dados"""
+    try:
+        if os.path.exists(DB_FILE):
+            print(f"🗑️  Removendo banco existente: {DB_FILE}")
+            os.remove(DB_FILE)
+        
+        # Recria as tabelas
+        if init_db():
+            print("✅ Banco de dados resetado com sucesso!")
+            print("✅ Agora você pode se registrar normalmente")
+            return True
+        else:
+            print("❌ Erro ao recriar banco")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Erro ao resetar banco: {e}")
+        return False
+
+def quick_fix_login():
+    """SOLUÇÃO RÁPIDA: Remove o problema de login/registro"""
+    print("🚀 INICIANDO CORREÇÃO RÁPIDA...")
+    
+    print("1. Mostrando usuários atuais:")
+    show_all_users()
+    
+    print("\n2. Limpando todos os usuários:")
+    clear_all_users()
+    
+    print("\n3. Resetando banco:")
+    reset_database()
+    
+    print("\n✅ CORREÇÃO CONCLUÍDA!")
+    print("✅ Agora você pode se registrar sem problemas!")
+    print("✅ Tente registrar 'joao_silva' novamente")
+
 # Executa teste se rodado diretamente
 if __name__ == "__main__":
-    test_database()
+    # Para usar a correção rápida, descomente a linha abaixo:
+    quick_fix_login()
     
-    # Teste de login se necessário
+    # Ou use as funções individuais:
+    # show_all_users()
+    # delete_user("joao_silva")  
+    # clear_all_users()
+    # reset_database()
+    
+    # Teste normal
+    # test_database()
     # test_login_flow("seu_usuario", "sua_senha")

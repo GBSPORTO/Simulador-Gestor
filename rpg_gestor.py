@@ -1,4 +1,145 @@
-# rpg_gestor.py
+def show_dashboard():
+    """Exibe o dashboard com estatísticas de todos os usuários"""
+    st.title("📊 Dashboard de Análise")
+    st.markdown("---")
+    
+    try:
+        # Tenta obter dados de avaliação - se a função não existir, cria dados de exemplo
+        try:
+            user_stats = db.get_all_user_evaluations()
+        except AttributeError:
+            # Se a função não existir no database.py, mostra instruções
+            st.warning("🔧 **Função do banco de dados não encontrada**")
+            st.info("""
+            Para o dashboard funcionar completamente, adicione esta função ao seu `database.py`:
+            
+            ```python
+            def get_all_user_evaluations():
+                try:
+                    cursor.execute('''
+                        SELECT 
+                            u.username, 
+                            u.name, 
+                            u.email,
+                            COUNT(CASE WHEN ua.action_data = 'acerto' THEN 1 END) as acertos,
+                            COUNT(CASE WHEN ua.action_data = 'erro' THEN 1 END) as erros,
+                            COUNT(ua.action_data) as total_decisions,
+                            MAX(ua.timestamp) as last_activity
+                        FROM users u
+                        LEFT JOIN user_actions ua ON u.username = ua.username 
+                        WHERE ua.action_type = 'avaliacao_automatica' OR ua.action_type IS NULL
+                        GROUP BY u.username, u.name, u.email
+                        ORDER BY total_decisions DESC
+                    ''')
+                    
+                    results = cursor.fetchall()
+                    user_stats = []
+                    
+                    for row in results:
+                        user_stats.append({
+                            'username': row[0],
+                            'name': row[1] or 'N/A',
+                            'email': row[2],
+                            'acertos': row[3] or 0,
+                            'erros': row[4] or 0, 
+                            'total_decisions': row[5] or 0,
+                            'last_activity': row[6] or 'Nunca'
+                        })
+                    
+                    return user_stats
+                    
+                except Exception as e:
+                    print(f"Erro ao obter avaliações: {e}")
+                    return []
+            ```
+            """)
+            
+            # Cria dados de exemplo para demonstração
+            user_stats = [
+                {
+                    'username': 'exemplo_user',
+                    'name': 'Usuário de Exemplo', 
+                    'email': 'exemplo@email.com',
+                    'acertos': 8,
+                    'erros': 2,
+                    'total_decisions': 10,
+                    'last_activity': '2024-01-15'
+                }
+            ]
+        
+        if not user_stats:
+            st.info("📝 Ainda não há dados de avaliação disponíveis.")
+            return
+        
+        # Métricas gerais
+        col1, col2, col3, col4 = st.columns(4)
+        
+        total_decisions = sum(user['total_decisions'] for user in user_stats)
+        total_hits = sum(user['acertos'] for user in user_stats)
+        total_misses = sum(user['erros'] for user in user_stats)
+        avg_accuracy = (total_hits / total_decisions * 100) if total_decisions > 0 else 0
+        
+        with col1:
+            st.metric("Total de Usuários", len(user_stats))
+        with col2:
+            st.metric("Total de Decisões", total_decisions)
+        with col3:
+            st.metric("Taxa de Acerto Geral", f"{avg_accuracy:.1f}%")
+        with col4:
+            st.metric("Usuários Ativos", len([u for u in user_stats if u['total_decisions'] > 0]))
+        
+        st.markdown("---")
+        
+        # Tabela de usuários
+        st.subheader("📈 Performance por Usuário")
+        
+        import pandas as pd
+        
+        df_data = []
+        for user in user_stats:
+            accuracy = (user['acertos'] / user['total_decisions'] * 100) if user['total_decisions'] > 0 else 0
+            df_data.append({
+                'Usuário': user['username'],
+                'Nome': user.get('name', 'N/A'),
+                'Total Decisões': user['total_decisions'],
+                'Acertos': user['acertos'],
+                'Erros': user['erros'],
+                'Taxa de Acerto (%)': f"{accuracy:.1f}%",
+                'Última Atividade': user.get('last_activity', 'N/A')
+            })
+        
+        df = pd.DataFrame(df_data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Gráficos
+        if len(df_data) > 0 and total_decisions > 0:
+            st.markdown("---")
+            st.subheader("📊 Visualizações")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Distribuição de Acertos vs Erros**")
+                chart_data = pd.DataFrame({
+                    'Usuário': [user['username'] for user in user_stats if user['total_decisions'] > 0],
+                    'Acertos': [user['acertos'] for user in user_stats if user['total_decisions'] > 0],
+                    'Erros': [user['erros'] for user in user_stats if user['total_decisions'] > 0]
+                })
+                if not chart_data.empty:
+                    st.bar_chart(chart_data.set_index('Usuário'))
+            
+            with col2:
+                st.markdown("**Taxa de Acerto por Usuário**")
+                accuracy_data = pd.DataFrame({
+                    'Usuário': [user['username'] for user in user_stats if user['total_decisions'] > 0],
+                    'Taxa de Acerto (%)': [(user['acertos'] / user['total_decisions'] * 100) for user in user_stats if user['total_decisions'] > 0]
+                })
+                if not accuracy_data.empty:
+                    st.bar_chart(accuracy_data.set_index('Usuário'))
+        
+    except Exception as e:
+        st.error(f"Erro ao carregar dashboard: {e}")
+        st.info("🔧 Verifique se todas as tabelas necessárias estão criadas no banco de dados.")# rpg_gestor.py
 import streamlit as st
 import openai
 import time
@@ -7,12 +148,11 @@ from streamlit_authenticator.utilities.hasher import Hasher
 import database as db
 from dotenv import load_dotenv, find_dotenv
 import os
-import pandas as pd
 
 # --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
 @st.cache_resource
 def init_openai_client():
-    """Inicializa o cliente OpenAI de forma cached para não o recriar a cada rerun."""
+    """Inicializa o cliente OpenAI de forma cached"""
     load_dotenv(find_dotenv())
     api_key = os.getenv("OPENAI_API_KEY")
     
@@ -27,69 +167,134 @@ def init_openai_client():
 
 # --- CONSTANTES ---
 ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
-EVALUATION_MODEL = "gpt-4-turbo"
+EVALUATION_MODEL = "gpt-4-turbo"  # Mantendo GPT-4 para avaliação consistente
 
 # --- INICIALIZAÇÃO ---
 client = init_openai_client()
 db.init_db()
 
 # --- FUNÇÕES AUXILIARES ---
-# A função create_authenticator foi removida para ser chamada diretamente no main()
+def get_formatted_credentials():
+    """
+    Obtém as credenciais do banco de dados e as formata corretamente
+    para o streamlit-authenticator
+    """
+    try:
+        raw_credentials = db.get_user_credentials()
+        
+        # Verifica se as credenciais estão no formato correto
+        if not raw_credentials or 'usernames' not in raw_credentials:
+            return {
+                'usernames': {},
+                'names': [],
+                'emails': []
+            }
+        
+        # Garante que a estrutura está correta
+        formatted_credentials = {
+            'usernames': raw_credentials.get('usernames', {}),
+            'names': list(raw_credentials.get('usernames', {}).keys()),
+            'emails': [user_data.get('email', '') for user_data in raw_credentials.get('usernames', {}).values()]
+        }
+        
+        return formatted_credentials
+        
+    except Exception as e:
+        st.error(f"Erro ao obter credenciais: {e}")
+        return {
+            'usernames': {},
+            'names': [],
+            'emails': []
+        }
+
+def create_authenticator():
+    """Cria o autenticador com as credenciais atuais"""
+    credentials = get_formatted_credentials()
+    
+    return stauth.Authenticate(
+        credentials,
+        'mestre_gestor_cookie',
+        'mestre_gestor_key',
+        30
+    )
 
 def evaluate_user_response_background(username, conversation_history, client):
-    """Usa um modelo de IA para avaliar a resposta do usuário em background."""
+    """
+    Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
+    como 'acerto' ou 'erro', registando-a no banco de dados.
+    Esta função roda em background sem mostrar feedback direto ao usuário.
+    """
     try:
+        # Pega apenas as últimas 4 mensagens para contexto
         history_for_eval = [
             {"role": msg["role"], "content": msg["content"]} 
             for msg in conversation_history[-4:]
         ]
+
         system_prompt = """
         Você é um avaliador especialista em simulações de gestão. Sua tarefa é analisar a última resposta do usuário no contexto da conversa e classificá-la como 'acerto' ou 'erro'.
         - 'acerto' significa que o usuário tomou uma decisão de gestão boa, lógica ou estratégica.
         - 'erro' significa que a decisão foi fraca, ilógica ou prejudicial.
         Responda APENAS com a palavra 'acerto' ou 'erro', em minúsculas e sem nenhuma outra explicação ou pontuação.
         """
+        
         eval_prompt = [{"role": "system", "content": system_prompt}] + history_for_eval
+
         response = client.chat.completions.create(
             model=EVALUATION_MODEL,
             messages=eval_prompt,
             max_tokens=10,
             temperature=0.1
         )
+        
         evaluation = response.choices[0].message.content.strip().lower()
+        
         if evaluation in ['acerto', 'erro']:
             db.log_user_action(username, "avaliacao_automatica", evaluation)
-    except Exception:
-        pass # Silencioso para não interromper o usuário
+            return evaluation
+        else:
+            return None
+            
+    except Exception as e:
+        # Silencioso - não mostra erro para o usuário na simulação
+        return None
 
-def show_chat_interface(username):
-    """Exibe a interface principal da simulação de chat."""
-    st.title("🎯 Simulador de Casos - Treinamento")
-    st.markdown("---")
-    
+def initialize_session_state(username):
+    """Inicializa o estado da sessão para o usuário"""
     if "thread_id" not in st.session_state:
         st.session_state.thread_id = db.get_or_create_thread_id(username, client)
     if "messages" not in st.session_state:
         st.session_state.messages = db.get_user_history(username)
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+def handle_chat_interaction(username, prompt):
+    """Lida com a interação do chat"""
+    # Adiciona mensagem do usuário
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    db.add_message_to_history(username, "user", prompt)
     
-    if prompt := st.chat_input("Digite sua resposta para continuar a simulação:"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        db.add_message_to_history(username, "user", prompt)
-        
+    # Exibe mensagem do usuário
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Avalia a resposta do usuário em background (sem feedback visual)
+    try:
         evaluate_user_response_background(username, st.session_state.messages, client)
-        
-        with st.chat_message("assistant"):
-            try:
-                client.beta.threads.messages.create(
-                    thread_id=st.session_state.thread_id,
-                    role="user",
-                    content=prompt
-                )
-                def stream_generator():
+    except:
+        pass  # Silencioso - não afeta a experiência do usuário
+    
+    # Gera resposta do assistente
+    with st.chat_message("assistant"):
+        try:
+            # Primeiro, cria mensagem no thread
+            client.beta.threads.messages.create(
+                thread_id=st.session_state.thread_id,
+                role="user",
+                content=prompt
+            )
+            
+            # Depois, cria e executa a run
+            def stream_generator():
+                try:
                     with client.beta.threads.runs.stream(
                         thread_id=st.session_state.thread_id,
                         assistant_id=ASSISTANT_ID,
@@ -97,92 +302,48 @@ def show_chat_interface(username):
                         for text in stream.text_deltas:
                             yield text
                             time.sleep(0.01)
-                response = st.write_stream(stream_generator)
-                
-                if response:
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    db.add_message_to_history(username, "assistant", response)
-            except Exception as e:
-                st.error(f"❌ Erro ao comunicar com o assistente: {str(e)}")
-        st.rerun()
-
-def show_dashboard():
-    """Exibe o dashboard com estatísticas de todos os usuários."""
-    st.title("📊 Dashboard de Análise")
-    st.markdown("---")
+                except Exception as e:
+                    yield f"❌ Erro na comunicação com o assistente: {str(e)}"
+                    
+            response = st.write_stream(stream_generator)
+            
+        except Exception as e:
+            st.error(f"❌ Erro ao comunicar com o assistente: {str(e)}")
+            st.info("🔧 Verifique se o ASSISTANT_ID está correto e se a API Key está configurada.")
+            return
     
-    user_stats = db.get_all_user_evaluations()
-        
-    if not user_stats:
-        st.info("📝 Ainda não há dados de avaliação disponíveis.")
-        return
-    
-    col1, col2, col3, col4 = st.columns(4)
-    total_decisions = sum(user['total_decisions'] for user in user_stats)
-    total_hits = sum(user['acertos'] for user in user_stats)
-    avg_accuracy = (total_hits / total_decisions * 100) if total_decisions > 0 else 0
-    
-    with col1:
-        st.metric("Total de Usuários", len(user_stats))
-    with col2:
-        st.metric("Total de Decisões", total_decisions)
-    with col3:
-        st.metric("Taxa de Acerto Geral", f"{avg_accuracy:.1f}%")
-    with col4:
-        st.metric("Usuários Ativos", len([u for u in user_stats if u['total_decisions'] > 0]))
-    
-    st.markdown("---")
-    
-    st.subheader("📈 Performance por Usuário")
-    df_data = []
-    for user in user_stats:
-        accuracy = (user['acertos'] / user['total_decisions'] * 100) if user['total_decisions'] > 0 else 0
-        df_data.append({
-            'Usuário': user['username'],
-            'Nome': user.get('name', 'N/A'),
-            'Total Decisões': user['total_decisions'],
-            'Acertos': user['acertos'],
-            'Erros': user['erros'],
-            'Taxa de Acerto (%)': f"{accuracy:.1f}",
-            'Última Atividade': user.get('last_activity', 'N/A')
-        })
-    df = pd.DataFrame(df_data)
-    st.dataframe(df, use_container_width=True)
-    
-    if len(df_data) > 0 and total_decisions > 0:
-        st.markdown("---")
-        st.subheader("📊 Visualizações")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Distribuição de Acertos vs Erros**")
-            chart_data = df[['Usuário', 'Acertos', 'Erros']].set_index('Usuário')
-            st.bar_chart(chart_data)
-        with col2:
-            st.markdown("**Taxa de Acerto por Usuário**")
-            accuracy_data = df[['Usuário', 'Taxa de Acerto (%)']].set_index('Usuário')
-            accuracy_data['Taxa de Acerto (%)'] = accuracy_data['Taxa de Acerto (%)'].astype(float)
-            st.bar_chart(accuracy_data)
+    # Salva resposta do assistente
+    if response:
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        db.add_message_to_history(username, "assistant", response)
 
 # --- APLICAÇÃO PRINCIPAL ---
 def main():
-    st.set_page_config(page_title="Simulador de Casos", page_icon="🎯", layout="wide")
-    
-    # --- CORREÇÃO: Cria o autenticador a cada execução ---
-    # Isto garante que ele sempre tem a lista de usuários mais recente do banco de dados.
-    credentials = db.get_user_credentials()
-    authenticator = stauth.Authenticate(
-        credentials,
-        'mestre_gestor_cookie',
-        'mestre_gestor_key',
-        30
+    st.set_page_config(
+        page_title="Simulador de Casos",
+        page_icon="🎯",
+        layout="wide"
     )
     
-    # Se o usuário já estiver logado
-    if st.session_state.get("authentication_status"):
+    # Recarrega credenciais se necessário
+    if 'just_registered' in st.session_state and st.session_state['just_registered']:
+        st.session_state['just_registered'] = False
+        st.cache_resource.clear()
+    
+    # Cria autenticador
+    authenticator = create_authenticator()
+    
+    # Verifica se o usuário está logado
+    if 'authentication_status' in st.session_state and st.session_state['authentication_status']:
+        # USUÁRIO JÁ LOGADO - Remove todas as outras opções da sidebar
+        st.sidebar.empty()  # Limpa a sidebar
+        
+        # Adiciona apenas o logout e menu principal
         authenticator.logout('Logout', 'sidebar')
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         st.sidebar.markdown("---")
         
+        # Menu principal após login
         page_choice = st.sidebar.selectbox(
             "Escolha uma opção:",
             ['🎯 Simulação', '📊 Dashboard'],
@@ -190,50 +351,104 @@ def main():
         )
         
         if page_choice == '🎯 Simulação':
-            show_chat_interface(st.session_state['username'])
+            # Inicializa estado da sessão
+            initialize_session_state(st.session_state['username'])
+            
+            # Interface principal
+            st.title("🎯 Simulador de Casos - Treinamento")
+            st.markdown("---")
+            
+            # Exibe histórico de mensagens
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+            
+            # Input do usuário
+            if prompt := st.chat_input("Digite sua resposta para continuar a simulação:"):
+                handle_chat_interaction(st.session_state['username'], prompt)
+                st.rerun()
+        
         elif page_choice == '📊 Dashboard':
             show_dashboard()
             
-    # Se o usuário não estiver logado
     else:
+        # USUÁRIO NÃO LOGADO - Limpa sidebar e mostra apenas opções de login
+        st.sidebar.empty()
+        
         choice = st.sidebar.selectbox(
             "Navegação:",
             ['🔐 Login', '📝 Registrar'],
             key="auth_menu"
         )
         
+        # --- PÁGINA DE LOGIN ---
         if choice == '🔐 Login':
             st.title("🔐 Login")
-            name, authentication_status, username = authenticator.login('main')
+            st.markdown("---")
+            
+            try:
+                name, authentication_status, username = authenticator.login('main')
+            except Exception as e:
+                st.error("Erro no sistema de login. Tente novamente ou registre-se.")
+                return
+
             if authentication_status:
-                st.session_state.update({'name': name, 'username': username, 'authentication_status': authentication_status})
+                # Usuário autenticado
+                st.session_state.update({
+                    'name': name,
+                    'username': username,
+                    'authentication_status': authentication_status
+                })
+                st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {name}!")
+                time.sleep(1)
                 st.rerun()
+
             elif authentication_status is False:
                 st.error('❌ Usuário ou senha incorretos')
-        
+            elif authentication_status is None:
+                st.warning('⚠️ Por favor, insira seu usuário e senha')
+
+        # --- PÁGINA DE REGISTRO ---
         elif choice == '📝 Registrar':
             st.title("📝 Crie sua Conta")
+            st.markdown("---")
+            
             with st.form("register_form", clear_on_submit=True):
-                new_name = st.text_input("Nome Completo")
-                new_username = st.text_input("Nome de Usuário")
-                new_email = st.text_input("E-mail")
-                new_password = st.text_input("Senha", type="password")
-                confirm_password = st.text_input("Confirme a Senha", type="password")
-                submitted = st.form_submit_button("🚀 Registrar")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    new_name = st.text_input("Nome Completo", placeholder="João Silva")
+                    new_username = st.text_input("Nome de Usuário", placeholder="joao_silva")
+                
+                with col2:
+                    new_email = st.text_input("E-mail", placeholder="joao@email.com")
+                    
+                new_password = st.text_input("Senha", type="password", placeholder="Digite uma senha segura")
+                confirm_password = st.text_input("Confirme a Senha", type="password", placeholder="Confirme sua senha")
+                
+                submitted = st.form_submit_button("🚀 Registrar", use_container_width=True)
 
                 if submitted:
                     if not all([new_name, new_email, new_username, new_password]):
                         st.error("❌ Por favor, preencha todos os campos.")
                     elif new_password != confirm_password:
                         st.error("❌ As senhas não coincidem.")
+                    elif len(new_password) < 6:
+                        st.error("❌ A senha deve ter pelo menos 6 caracteres.")
                     else:
-                        hashed_password = Hasher([new_password]).generate()[0]
-                        if db.add_user(new_username, new_name, new_email, hashed_password):
-                            st.success("✅ Usuário registrado com sucesso! Por favor, faça o login.")
-                            time.sleep(2)
-                            st.rerun() # Apenas faz o rerun para limpar o formulário e mostrar a tela de login
-                        else:
-                            st.error("❌ Nome de usuário ou e-mail já existe.")
+                        try:
+                            hashed_password = Hasher([new_password]).generate()[0]
+                            
+                            if db.add_user(new_username, new_name, new_email, hashed_password):
+                                st.success("✅ Usuário registrado com sucesso! Redirecionando para o login...")
+                                st.session_state['just_registered'] = True
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error("❌ Nome de usuário ou e-mail já existe.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Ocorreu um erro durante o registro: {e}")
 
 if __name__ == "__main__":
     main()

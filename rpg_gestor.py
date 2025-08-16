@@ -4,8 +4,68 @@ def show_dashboard():
     st.markdown("---")
     
     try:
-        # Obtém dados de avaliação de todos os usuários
-        user_stats = db.get_all_user_evaluations()  # Você precisará implementar esta função no database.py
+        # Tenta obter dados de avaliação - se a função não existir, cria dados de exemplo
+        try:
+            user_stats = db.get_all_user_evaluations()
+        except AttributeError:
+            # Se a função não existir no database.py, mostra instruções
+            st.warning("🔧 **Função do banco de dados não encontrada**")
+            st.info("""
+            Para o dashboard funcionar completamente, adicione esta função ao seu `database.py`:
+            
+            ```python
+            def get_all_user_evaluations():
+                try:
+                    cursor.execute('''
+                        SELECT 
+                            u.username, 
+                            u.name, 
+                            u.email,
+                            COUNT(CASE WHEN ua.action_data = 'acerto' THEN 1 END) as acertos,
+                            COUNT(CASE WHEN ua.action_data = 'erro' THEN 1 END) as erros,
+                            COUNT(ua.action_data) as total_decisions,
+                            MAX(ua.timestamp) as last_activity
+                        FROM users u
+                        LEFT JOIN user_actions ua ON u.username = ua.username 
+                        WHERE ua.action_type = 'avaliacao_automatica' OR ua.action_type IS NULL
+                        GROUP BY u.username, u.name, u.email
+                        ORDER BY total_decisions DESC
+                    ''')
+                    
+                    results = cursor.fetchall()
+                    user_stats = []
+                    
+                    for row in results:
+                        user_stats.append({
+                            'username': row[0],
+                            'name': row[1] or 'N/A',
+                            'email': row[2],
+                            'acertos': row[3] or 0,
+                            'erros': row[4] or 0, 
+                            'total_decisions': row[5] or 0,
+                            'last_activity': row[6] or 'Nunca'
+                        })
+                    
+                    return user_stats
+                    
+                except Exception as e:
+                    print(f"Erro ao obter avaliações: {e}")
+                    return []
+            ```
+            """)
+            
+            # Cria dados de exemplo para demonstração
+            user_stats = [
+                {
+                    'username': 'exemplo_user',
+                    'name': 'Usuário de Exemplo', 
+                    'email': 'exemplo@email.com',
+                    'acertos': 8,
+                    'erros': 2,
+                    'total_decisions': 10,
+                    'last_activity': '2024-01-15'
+                }
+            ]
         
         if not user_stats:
             st.info("📝 Ainda não há dados de avaliação disponíveis.")
@@ -52,7 +112,7 @@ def show_dashboard():
         st.dataframe(df, use_container_width=True)
         
         # Gráficos
-        if len(df_data) > 0:
+        if len(df_data) > 0 and total_decisions > 0:
             st.markdown("---")
             st.subheader("📊 Visualizações")
             
@@ -61,23 +121,25 @@ def show_dashboard():
             with col1:
                 st.markdown("**Distribuição de Acertos vs Erros**")
                 chart_data = pd.DataFrame({
-                    'Usuário': [user['username'] for user in user_stats],
-                    'Acertos': [user['acertos'] for user in user_stats],
-                    'Erros': [user['erros'] for user in user_stats]
+                    'Usuário': [user['username'] for user in user_stats if user['total_decisions'] > 0],
+                    'Acertos': [user['acertos'] for user in user_stats if user['total_decisions'] > 0],
+                    'Erros': [user['erros'] for user in user_stats if user['total_decisions'] > 0]
                 })
-                st.bar_chart(chart_data.set_index('Usuário'))
+                if not chart_data.empty:
+                    st.bar_chart(chart_data.set_index('Usuário'))
             
             with col2:
                 st.markdown("**Taxa de Acerto por Usuário**")
                 accuracy_data = pd.DataFrame({
-                    'Usuário': [user['username'] for user in user_stats],
-                    'Taxa de Acerto (%)': [(user['acertos'] / user['total_decisions'] * 100) if user['total_decisions'] > 0 else 0 for user in user_stats]
+                    'Usuário': [user['username'] for user in user_stats if user['total_decisions'] > 0],
+                    'Taxa de Acerto (%)': [(user['acertos'] / user['total_decisions'] * 100) for user in user_stats if user['total_decisions'] > 0]
                 })
-                st.bar_chart(accuracy_data.set_index('Usuário'))
+                if not accuracy_data.empty:
+                    st.bar_chart(accuracy_data.set_index('Usuário'))
         
     except Exception as e:
         st.error(f"Erro ao carregar dashboard: {e}")
-        st.info("🔧 Certifique-se de que a função `get_all_user_evaluations()` está implementada no database.py")# rpg_gestor.py
+        st.info("🔧 Verifique se todas as tabelas necessárias estão criadas no banco de dados.")# rpg_gestor.py
 import streamlit as st
 import openai
 import time
@@ -268,98 +330,103 @@ def main():
     # Cria autenticador
     authenticator = create_authenticator()
     
-    # --- NAVEGAÇÃO ---
-    choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
-    
-    # --- PÁGINA DE LOGIN ---
-    if choice == 'Login':
-        try:
-            name, authentication_status, username = authenticator.login('main')
-        except Exception as e:
-            st.error("Erro no sistema de login. Tente novamente ou registre-se.")
-            return
-
-        if authentication_status:
-            # Usuário autenticado
-            st.session_state.update({
-                'name': name,
-                'username': username,
-                'authentication_status': authentication_status
-            })
-            
-            authenticator.logout('Logout', 'sidebar')
-            st.sidebar.title(f"Bem-vindo(a) {name}!")
-            
-            # --- SUBMENU APÓS LOGIN ---
-            page_choice = st.sidebar.radio("Simulador de Casos", ['Simulação', 'Dashboard'])
-            
-            if page_choice == 'Simulação':
-                # Inicializa estado da sessão
-                initialize_session_state(username)
-                
-                # Interface principal
-                st.title("🎯 Simulador de Casos - Treinamento")
-                st.markdown("---")
-                
-                # Exibe histórico de mensagens
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-                
-                # Input do usuário
-                if prompt := st.chat_input("Digite sua resposta para continuar a simulação:"):
-                    handle_chat_interaction(username, prompt)
-                    st.rerun()
-            
-            elif page_choice == 'Dashboard':
-                show_dashboard()
-
-        elif authentication_status is False:
-            st.error('❌ Usuário ou senha incorretos')
-        elif authentication_status is None:
-            st.warning('⚠️ Por favor, insira seu usuário e senha')
-
-    # --- PÁGINA DE REGISTRO ---
-    elif choice == 'Registrar':
-        st.title("📝 Crie sua Conta")
-        st.markdown("---")
+    # Verifica se o usuário está logado
+    if 'authentication_status' in st.session_state and st.session_state['authentication_status']:
+        # USUÁRIO JÁ LOGADO - Mostra apenas o menu do simulador
+        authenticator.logout('Logout', 'sidebar')
+        st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         
-        with st.form("register_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
+        # --- MENU PRINCIPAL APÓS LOGIN ---
+        page_choice = st.sidebar.radio("Simulador de Casos", ['Simulação', 'Dashboard'])
+        
+        if page_choice == 'Simulação':
+            # Inicializa estado da sessão
+            initialize_session_state(st.session_state['username'])
             
-            with col1:
-                new_name = st.text_input("Nome Completo", placeholder="João Silva")
-                new_username = st.text_input("Nome de Usuário", placeholder="joao_silva")
+            # Interface principal
+            st.title("🎯 Simulador de Casos - Treinamento")
+            st.markdown("---")
             
-            with col2:
-                new_email = st.text_input("E-mail", placeholder="joao@email.com")
-                
-            new_password = st.text_input("Senha", type="password", placeholder="Digite uma senha segura")
-            confirm_password = st.text_input("Confirme a Senha", type="password", placeholder="Confirme sua senha")
+            # Exibe histórico de mensagens
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
             
-            submitted = st.form_submit_button("🚀 Registrar", use_container_width=True)
+            # Input do usuário
+            if prompt := st.chat_input("Digite sua resposta para continuar a simulação:"):
+                handle_chat_interaction(st.session_state['username'], prompt)
+                st.rerun()
+        
+        elif page_choice == 'Dashboard':
+            show_dashboard()
+            
+    else:
+        # USUÁRIO NÃO LOGADO - Mostra menu de login/registro
+        choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
+        
+        # --- PÁGINA DE LOGIN ---
+        if choice == 'Login':
+            try:
+                name, authentication_status, username = authenticator.login('main')
+            except Exception as e:
+                st.error("Erro no sistema de login. Tente novamente ou registre-se.")
+                return
 
-            if submitted:
-                if not all([new_name, new_email, new_username, new_password]):
-                    st.error("❌ Por favor, preencha todos os campos.")
-                elif new_password != confirm_password:
-                    st.error("❌ As senhas não coincidem.")
-                elif len(new_password) < 6:
-                    st.error("❌ A senha deve ter pelo menos 6 caracteres.")
-                else:
-                    try:
-                        hashed_password = Hasher([new_password]).generate()[0]
-                        
-                        if db.add_user(new_username, new_name, new_email, hashed_password):
-                            st.success("✅ Usuário registrado com sucesso! Redirecionando para o login...")
-                            st.session_state['just_registered'] = True
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.error("❌ Nome de usuário ou e-mail já existe.")
+            if authentication_status:
+                # Usuário autenticado
+                st.session_state.update({
+                    'name': name,
+                    'username': username,
+                    'authentication_status': authentication_status
+                })
+                st.rerun()  # Recarrega para mostrar o menu principal
+
+            elif authentication_status is False:
+                st.error('❌ Usuário ou senha incorretos')
+            elif authentication_status is None:
+                st.warning('⚠️ Por favor, insira seu usuário e senha')
+
+        # --- PÁGINA DE REGISTRO ---
+        elif choice == 'Registrar':
+            st.title("📝 Crie sua Conta")
+            st.markdown("---")
+            
+            with st.form("register_form", clear_on_submit=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    new_name = st.text_input("Nome Completo", placeholder="João Silva")
+                    new_username = st.text_input("Nome de Usuário", placeholder="joao_silva")
+                
+                with col2:
+                    new_email = st.text_input("E-mail", placeholder="joao@email.com")
+                    
+                new_password = st.text_input("Senha", type="password", placeholder="Digite uma senha segura")
+                confirm_password = st.text_input("Confirme a Senha", type="password", placeholder="Confirme sua senha")
+                
+                submitted = st.form_submit_button("🚀 Registrar", use_container_width=True)
+
+                if submitted:
+                    if not all([new_name, new_email, new_username, new_password]):
+                        st.error("❌ Por favor, preencha todos os campos.")
+                    elif new_password != confirm_password:
+                        st.error("❌ As senhas não coincidem.")
+                    elif len(new_password) < 6:
+                        st.error("❌ A senha deve ter pelo menos 6 caracteres.")
+                    else:
+                        try:
+                            hashed_password = Hasher([new_password]).generate()[0]
                             
-                    except Exception as e:
-                        st.error(f"❌ Ocorreu um erro durante o registro: {e}")
+                            if db.add_user(new_username, new_name, new_email, hashed_password):
+                                st.success("✅ Usuário registrado com sucesso! Redirecionando para o login...")
+                                st.session_state['just_registered'] = True
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error("❌ Nome de usuário ou e-mail já existe.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Ocorreu um erro durante o registro: {e}")
 
 if __name__ == "__main__":
     main()

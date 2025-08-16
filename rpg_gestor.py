@@ -132,9 +132,9 @@ elif choice == 'Registrar':
 
             if submitted:
                 if new_password == confirm_password and new_password != "":
-                    # --- A CORREÇÃO ESTÁ AQUI ---
-                    # Usamos o método estático generate_hashes da classe Authenticate
-                    hashed_password = stauth.Authenticate.generate_hashes([new_password])[0]
+                    # --- A CORREÇÃO FINAL ESTÁ AQUI ---
+                    # Voltamos a usar a classe Hasher, que é a correta para esta versão da biblioteca
+                    hashed_password = stauth.Hasher([new_password]).generate()[0]
                     
                     if db.add_user(new_username, new_name, new_email, hashed_password):
                         st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")

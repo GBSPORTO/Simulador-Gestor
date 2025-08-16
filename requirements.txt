@@ -1,7 +1,30 @@
+# Interface web
 streamlit
+
+# Autenticação
 streamlit-authenticator==0.3.2
-openai
+
+# OpenAI API
+openai>=1.0.0
+
+# Manipulação de dados
 pandas
-pyyaml
+
+# Configuração
+pyyaml>=6.0
 python-dotenv
 
+# Criptografia (necessário para streamlit-authenticator)
+bcrypt
+
+# Hashing de senhas (dependência do streamlit-authenticator)
+PyJWT
+
+# Utilitários para validação
+pydantic
+
+# Requests para HTTP (pode ser necessário)
+requests
+
+# Numpy (dependência comum do pandas)
+numpy

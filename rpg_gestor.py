@@ -1,8 +1,9 @@
+# rpg_gestor.py
 import streamlit as st
 import openai
 import time
 import streamlit_authenticator as stauth
-import database as db
+import database as db # Garanta que seu arquivo de DB se chama database.py
 from dotenv import load_dotenv, find_dotenv
 import os
 
@@ -13,10 +14,17 @@ api_key = os.getenv("OPENAI_API_KEY")
 if api_key:
     client = openai.Client(api_key=api_key)
 else:
-    st.error("Chave de API da OpenAI não encontrada. Crie um arquivo .env ou configure nos segredos do Streamlit.")
+    # Fallback para os segredos do Streamlit, essencial para o deploy
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+        client = openai.Client(api_key=api_key)
+    except (KeyError, FileNotFoundError):
+        st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
+        st.stop()
+
 
 # ID do seu assistente
-ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
+ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC" # Substitua se necessário
 
 # Inicializa o banco de dados
 db.init_db()
@@ -61,15 +69,12 @@ if choice == 'Login':
 
         # Input do usuário
         if prompt := st.chat_input("Vamos iniciar a simulação, digite algo para começar:"):
-            # Adiciona e salva a mensagem do usuário
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
             db.add_message_to_history(username, "user", prompt)
 
-            # Exibe a resposta do assistente com streaming
             with st.chat_message("assistant"):
-                # Função geradora para o streaming
                 def stream_generator():
                     with client.beta.threads.runs.stream(
                         thread_id=st.session_state.thread_id,
@@ -79,7 +84,6 @@ if choice == 'Login':
                             yield text
                             time.sleep(0.01)
                 
-                # Adiciona a mensagem do usuário à thread antes de executar o stream
                 client.beta.threads.messages.create(
                     thread_id=st.session_state.thread_id,
                     role="user",
@@ -88,15 +92,11 @@ if choice == 'Login':
                 
                 response = st.write_stream(stream_generator)
 
-            # Adiciona e salva a resposta completa do assistente
             st.session_state.messages.append({"role": "assistant", "content": response})
             db.add_message_to_history(username, "assistant", response)
-            
-            # Força o rerender para mostrar os botões de feedback
             st.rerun()
 
-        # --- BOTÕES DE FEEDBACK ---
-        # Só mostra os botões se a última mensagem for do assistente
+        # Botões de feedback
         if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
             st.divider()
             st.write("A resposta do assistente foi útil?")
@@ -132,7 +132,10 @@ elif choice == 'Registrar':
 
             if submitted:
                 if new_password == confirm_password and new_password != "":
+                    # --- A CORREÇÃO ESTÁ AQUI ---
+                    # A função Hasher espera uma LISTA de senhas. A chamada correta é com colchetes.
                     hashed_password = stauth.Hasher([new_password]).generate()[0]
+                    
                     if db.add_user(new_username, new_name, new_email, hashed_password):
                         st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")
                     else:
@@ -140,4 +143,4 @@ elif choice == 'Registrar':
                 else:
                     st.error("As senhas não coincidem ou estão em branco.")
     except Exception as e:
-        st.error(e)
+        st.error(f"Ocorreu um erro durante o registro: {e}")

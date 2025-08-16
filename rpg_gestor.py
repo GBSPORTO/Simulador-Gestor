@@ -171,7 +171,7 @@ EVALUATION_MODEL = "gpt-4-turbo"  # Mantendo GPT-4 para avaliação consistente
 
 # --- INICIALIZAÇÃO ---
 client = init_openai_client()
-db.init_db()
+# db.init_db()
 
 # --- FUNÇÕES AUXILIARES ---
 def get_formatted_credentials():
@@ -452,3 +452,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -3,20 +3,17 @@ import streamlit as st
 import openai
 import time
 import streamlit_authenticator as stauth
-# --- A CORREÇÃO ESTÁ AQUI (Importação Específica) ---
 from streamlit_authenticator.utilities.hasher import Hasher
-import database as db # Garanta que seu arquivo de DB se chama database.py
+import database as db
 from dotenv import load_dotenv, find_dotenv
 import os
 
 # --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
-# Carrega variáveis de ambiente (sua chave da OpenAI)
 load_dotenv(find_dotenv())
 api_key = os.getenv("OPENAI_API_KEY")
 if api_key:
     client = openai.Client(api_key=api_key)
 else:
-    # Fallback para os segredos do Streamlit, essencial para o deploy
     try:
         api_key = st.secrets["OPENAI_API_KEY"]
         client = openai.Client(api_key=api_key)
@@ -24,14 +21,12 @@ else:
         st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
         st.stop()
 
+ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
+# --- ALTERAÇÃO: Defina aqui o modelo para a avaliação ---
+# Para consistência, use o mesmo modelo de base que o seu assistente (ASSISTANT_ID) utiliza.
+EVALUATION_MODEL = "gpt-4o"
 
-# ID do seu assistente
-ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC" # Substitua se necessário
-
-# Inicializa o banco de dados
 db.init_db()
-
-# Carrega as credenciais do banco de dados para o autenticador
 credentials = db.get_user_credentials()
 authenticator = stauth.Authenticate(
     credentials,
@@ -39,6 +34,44 @@ authenticator = stauth.Authenticate(
     'mestre_gestor_key',
     30
 )
+
+# --- FUNÇÃO DE AVALIAÇÃO AUTOMÁTICA (Atualizada) ---
+def evaluate_user_response(username, conversation_history, client):
+    """
+    Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
+    como 'acerto' ou 'erro', registando-a no banco de dados.
+    """
+    history_for_eval = [
+        {"role": msg["role"], "content": msg["content"]} for msg in conversation_history[-4:]
+    ]
+
+    system_prompt = """
+    Você é um avaliador especialista em simulações de gestão. Sua tarefa é analisar a última resposta do usuário no contexto da conversa e classificá-la como 'acerto' ou 'erro'.
+    - 'acerto' significa que o usuário tomou uma decisão de gestão boa, lógica ou estratégica.
+    - 'erro' significa que a decisão foi fraca, ilógica ou prejudicial.
+    Responda APENAS com a palavra 'acerto' ou 'erro', em minúsculas e sem nenhuma outra explicação ou pontuação.
+    """
+    
+    eval_prompt = [{"role": "system", "content": system_prompt}] + history_for_eval
+
+    try:
+        response = client.chat.completions.create(
+            model=EVALUATION_MODEL, # Usa a variável de configuração definida no topo
+            messages=eval_prompt,
+            max_tokens=5,
+            temperature=0
+        )
+        evaluation = response.choices[0].message.content.strip().lower()
+        
+        if evaluation in ['acerto', 'erro']:
+            db.log_user_action(username, "avaliacao_automatica", evaluation)
+            return evaluation
+        else:
+            return None
+            
+    except Exception as e:
+        st.warning(f"Erro na avaliação automática: {e}")
+        return None
 
 # --- NAVEGAÇÃO E PÁGINAS ---
 choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
@@ -48,33 +81,35 @@ if choice == 'Login':
     authenticator.login('main')
 
     if st.session_state["authentication_status"]:
-        # --- SE O LOGIN FOR BEM-SUCEDIDO, MOSTRA O CHAT ---
         username = st.session_state['username']
-        
         authenticator.logout('Logout', 'sidebar')
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         
-        # Carrega ou cria a thread do usuário
         if "thread_id" not in st.session_state:
             st.session_state.thread_id = db.get_or_create_thread_id(username, client)
-        
-        # Carrega o histórico de mensagens do usuário
         if "messages" not in st.session_state:
             st.session_state.messages = db.get_user_history(username)
 
         st.title("Simulador Gestor - Assistente de casos")
 
-        # Exibe o histórico de mensagens
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        # Input do usuário
         if prompt := st.chat_input("Vamos iniciar a simulação, digite algo para começar:"):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
             db.add_message_to_history(username, "user", prompt)
+
+            with st.spinner("A avaliar a sua decisão..."):
+                evaluation_result = evaluate_user_response(username, st.session_state.messages, client)
+            
+            if evaluation_result:
+                if evaluation_result == 'acerto':
+                    st.toast("✅ Boa decisão!")
+                else:
+                    st.toast("⚠️ Decisão questionável.")
 
             with st.chat_message("assistant"):
                 def stream_generator():
@@ -98,23 +133,6 @@ if choice == 'Login':
             db.add_message_to_history(username, "assistant", response)
             st.rerun()
 
-        # Botões de feedback
-        if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
-            st.divider()
-            st.write("A resposta do assistente foi útil?")
-            col1, col2 = st.columns(2)
-            if col1.button("Sim, foi um acerto 👍"):
-                db.log_user_action(username, "avaliacao_resposta", "acerto")
-                st.success("Feedback registrado!")
-                time.sleep(1)
-                st.rerun()
-
-            if col2.button("Não, foi um erro 👎"):
-                db.log_user_action(username, "avaliacao_resposta", "erro")
-                st.error("Feedback registrado.")
-                time.sleep(1)
-                st.rerun()
-
     elif st.session_state["authentication_status"] is False:
         st.error('Usuário ou senha incorretos')
     elif st.session_state["authentication_status"] is None:
@@ -134,10 +152,7 @@ elif choice == 'Registrar':
 
             if submitted:
                 if new_password == confirm_password and new_password != "":
-                    # --- A CORREÇÃO FINAL ESTÁ AQUI ---
-                    # Usamos a classe Hasher importada diretamente
                     hashed_password = Hasher([new_password]).generate()[0]
-                    
                     if db.add_user(new_username, new_name, new_email, hashed_password):
                         st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")
                     else:

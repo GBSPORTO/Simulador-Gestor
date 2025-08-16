@@ -284,35 +284,38 @@ def handle_chat_interaction(username, prompt):
     
     # Gera resposta do assistente
     with st.chat_message("assistant"):
-        def stream_generator():
-            try:
-                # Usando a API Assistants v2 (compatível com v4.1)
-                with client.beta.threads.runs.stream(
-                    thread_id=st.session_state.thread_id,
-                    assistant_id=ASSISTANT_ID,
-                ) as stream:
-                    for text in stream.text_deltas:
-                        yield text
-                        time.sleep(0.01)
-            except Exception as e:
-                yield f"Erro na comunicação com o assistente: {e}"
-        
-        # Cria mensagem no thread usando a API v2
         try:
+            # Primeiro, cria mensagem no thread
             client.beta.threads.messages.create(
                 thread_id=st.session_state.thread_id,
                 role="user",
                 content=prompt
             )
+            
+            # Depois, cria e executa a run
+            def stream_generator():
+                try:
+                    with client.beta.threads.runs.stream(
+                        thread_id=st.session_state.thread_id,
+                        assistant_id=ASSISTANT_ID,
+                    ) as stream:
+                        for text in stream.text_deltas:
+                            yield text
+                            time.sleep(0.01)
+                except Exception as e:
+                    yield f"❌ Erro na comunicação com o assistente: {str(e)}"
+                    
+            response = st.write_stream(stream_generator)
+            
         except Exception as e:
-            st.error(f"Erro ao comunicar com o assistente: {e}")
+            st.error(f"❌ Erro ao comunicar com o assistente: {str(e)}")
+            st.info("🔧 Verifique se o ASSISTANT_ID está correto e se a API Key está configurada.")
             return
-        
-        response = st.write_stream(stream_generator)
     
     # Salva resposta do assistente
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    db.add_message_to_history(username, "assistant", response)
+    if response:
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        db.add_message_to_history(username, "assistant", response)
 
 # --- APLICAÇÃO PRINCIPAL ---
 def main():
@@ -325,21 +328,29 @@ def main():
     # Recarrega credenciais se necessário
     if 'just_registered' in st.session_state and st.session_state['just_registered']:
         st.session_state['just_registered'] = False
-        st.cache_resource.clear()  # Limpa cache se necessário
+        st.cache_resource.clear()
     
     # Cria autenticador
     authenticator = create_authenticator()
     
     # Verifica se o usuário está logado
     if 'authentication_status' in st.session_state and st.session_state['authentication_status']:
-        # USUÁRIO JÁ LOGADO - Mostra apenas o menu do simulador
+        # USUÁRIO JÁ LOGADO - Remove todas as outras opções da sidebar
+        st.sidebar.empty()  # Limpa a sidebar
+        
+        # Adiciona apenas o logout e menu principal
         authenticator.logout('Logout', 'sidebar')
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
+        st.sidebar.markdown("---")
         
-        # --- MENU PRINCIPAL APÓS LOGIN ---
-        page_choice = st.sidebar.radio("Simulador de Casos", ['Simulação', 'Dashboard'])
+        # Menu principal após login
+        page_choice = st.sidebar.selectbox(
+            "Escolha uma opção:",
+            ['🎯 Simulação', '📊 Dashboard'],
+            key="main_menu"
+        )
         
-        if page_choice == 'Simulação':
+        if page_choice == '🎯 Simulação':
             # Inicializa estado da sessão
             initialize_session_state(st.session_state['username'])
             
@@ -357,15 +368,24 @@ def main():
                 handle_chat_interaction(st.session_state['username'], prompt)
                 st.rerun()
         
-        elif page_choice == 'Dashboard':
+        elif page_choice == '📊 Dashboard':
             show_dashboard()
             
     else:
-        # USUÁRIO NÃO LOGADO - Mostra menu de login/registro
-        choice = st.sidebar.radio("Navegação", ['Login', 'Registrar'])
+        # USUÁRIO NÃO LOGADO - Limpa sidebar e mostra apenas opções de login
+        st.sidebar.empty()
+        
+        choice = st.sidebar.selectbox(
+            "Navegação:",
+            ['🔐 Login', '📝 Registrar'],
+            key="auth_menu"
+        )
         
         # --- PÁGINA DE LOGIN ---
-        if choice == 'Login':
+        if choice == '🔐 Login':
+            st.title("🔐 Login")
+            st.markdown("---")
+            
             try:
                 name, authentication_status, username = authenticator.login('main')
             except Exception as e:
@@ -379,7 +399,9 @@ def main():
                     'username': username,
                     'authentication_status': authentication_status
                 })
-                st.rerun()  # Recarrega para mostrar o menu principal
+                st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {name}!")
+                time.sleep(1)
+                st.rerun()
 
             elif authentication_status is False:
                 st.error('❌ Usuário ou senha incorretos')
@@ -387,7 +409,7 @@ def main():
                 st.warning('⚠️ Por favor, insira seu usuário e senha')
 
         # --- PÁGINA DE REGISTRO ---
-        elif choice == 'Registrar':
+        elif choice == '📝 Registrar':
             st.title("📝 Crie sua Conta")
             st.markdown("---")
             

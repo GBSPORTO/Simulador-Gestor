@@ -3,6 +3,8 @@ import streamlit as st
 import openai
 import time
 import streamlit_authenticator as stauth
+# --- A CORREÇÃO ESTÁ AQUI (Importação Específica) ---
+from streamlit_authenticator.utilities.hasher import Hasher
 import database as db # Garanta que seu arquivo de DB se chama database.py
 from dotenv import load_dotenv, find_dotenv
 import os
@@ -133,8 +135,8 @@ elif choice == 'Registrar':
             if submitted:
                 if new_password == confirm_password and new_password != "":
                     # --- A CORREÇÃO FINAL ESTÁ AQUI ---
-                    # Voltamos a usar a classe Hasher, que é a correta para esta versão da biblioteca
-                    hashed_password = stauth.Hasher([new_password]).generate()[0]
+                    # Usamos a classe Hasher importada diretamente
+                    hashed_password = Hasher([new_password]).generate()[0]
                     
                     if db.add_user(new_username, new_name, new_email, hashed_password):
                         st.success("Usuário registrado com sucesso! Volte para a tela de Login para entrar.")

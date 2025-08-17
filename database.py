@@ -13,17 +13,30 @@ def init_database():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # Tabela de usuários
+        # Tabela de usuários (CORRIGIDA - adicionada coluna 'name')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
+                name TEXT,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_admin BOOLEAN DEFAULT FALSE
             )
         ''')
+        
+        # Verifica se a coluna 'name' existe e a adiciona se necessário
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'name' not in columns:
+            print("🔧 Adicionando coluna 'name' à tabela users...")
+            cursor.execute("ALTER TABLE users ADD COLUMN name TEXT")
+            
+            # Atualiza registros existentes para usar username como fallback para name
+            cursor.execute("UPDATE users SET name = username WHERE name IS NULL")
+            print("✅ Coluna 'name' adicionada com sucesso!")
         
         # Tabela de mensagens/conversas
         cursor.execute('''
@@ -99,9 +112,9 @@ def check_user_exists(username=None, email=None):
         print(f"Erro ao verificar usuário: {e}")
         return False, False
 
-def create_user(username, email, password, is_admin=False):
+def create_user(username, email, password, is_admin=False, name=None):
     """
-    Cria novo usuário no banco de dados
+    Cria novo usuário no banco de dados (CORRIGIDA - aceita parâmetro name)
     Retorna: (success, message)
     """
     try:
@@ -114,6 +127,10 @@ def create_user(username, email, password, is_admin=False):
         
         if len(password) < 6:
             return False, "Senha deve ter pelo menos 6 caracteres"
+        
+        # Se name não foi fornecido, usa username como fallback
+        if not name:
+            name = username
         
         # Verifica se já existem
         user_exists, email_exists = check_user_exists(username, email)
@@ -132,9 +149,9 @@ def create_user(username, email, password, is_admin=False):
         password_hash = hash_password(password)
         
         cursor.execute('''
-            INSERT INTO users (username, email, password_hash, is_admin)
-            VALUES (?, ?, ?, ?)
-        ''', (username, email, password_hash, is_admin))
+            INSERT INTO users (username, name, email, password_hash, is_admin)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (username, name, email, password_hash, is_admin))
         
         conn.commit()
         conn.close()
@@ -154,7 +171,7 @@ def create_user(username, email, password, is_admin=False):
 
 def authenticate_user(username, password):
     """
-    Autentica usuário
+    Autentica usuário (CORRIGIDA - inclui campo name)
     Retorna: (success, user_data or error_message)
     """
     try:
@@ -164,7 +181,7 @@ def authenticate_user(username, password):
         password_hash = hash_password(password)
         
         cursor.execute('''
-            SELECT username, email, is_admin 
+            SELECT username, name, email, is_admin 
             FROM users 
             WHERE LOWER(username) = LOWER(?) AND password_hash = ?
         ''', (username, password_hash))
@@ -175,8 +192,9 @@ def authenticate_user(username, password):
         if user:
             return True, {
                 'username': user[0],
-                'email': user[1],
-                'is_admin': user[2]
+                'name': user[1] or user[0],  # Fallback para username se name for NULL
+                'email': user[2],
+                'is_admin': user[3]
             }
         else:
             return False, "Nome de usuário ou senha incorretos"
@@ -310,12 +328,12 @@ def reset_database():
         print(f"❌ Erro ao resetar banco: {e}")
 
 def list_all_users():
-    """Lista todos os usuários (admin only)"""
+    """Lista todos os usuários (admin only) - CORRIGIDA"""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        cursor.execute("SELECT username, email, created_at, is_admin FROM users ORDER BY created_at DESC")
+        cursor.execute("SELECT username, name, email, created_at, is_admin FROM users ORDER BY created_at DESC")
         users = cursor.fetchall()
         
         conn.close()
@@ -337,6 +355,9 @@ def delete_user(username):
         # Deleta ações
         cursor.execute("DELETE FROM user_actions WHERE username = ?", (username,))
         
+        # Deleta threads
+        cursor.execute("DELETE FROM user_threads WHERE username = ?", (username,))
+        
         # Deleta usuário
         cursor.execute("DELETE FROM users WHERE username = ?", (username,))
         
@@ -348,6 +369,23 @@ def delete_user(username):
     except Exception as e:
         print(f"Erro ao deletar usuário: {e}")
         return False, "Erro ao deletar usuário"
+
+def update_user_name(username, new_name):
+    """Atualiza o nome do usuário"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("UPDATE users SET name = ? WHERE username = ?", (new_name, username))
+        
+        conn.commit()
+        conn.close()
+        
+        return True, "Nome atualizado com sucesso"
+        
+    except Exception as e:
+        print(f"Erro ao atualizar nome: {e}")
+        return False, "Erro ao atualizar nome"
 
 # Funções adicionais para compatibilidade com o rpg_gestor.py
 def get_or_create_thread_id(username, client):
@@ -390,7 +428,7 @@ def log_user_action(username, action_type, action_data):
     return save_user_action(username, action_type, action_data)
 
 def get_all_user_evaluations():
-    """Busca avaliações de todos os usuários"""
+    """Busca avaliações de todos os usuários (CORRIGIDA)"""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -398,7 +436,7 @@ def get_all_user_evaluations():
         cursor.execute('''
             SELECT 
                 u.username, 
-                u.username as name,  -- Usando username como fallback para name
+                COALESCE(u.name, u.username) as name,
                 u.email,
                 COUNT(CASE WHEN ua.action_data = 'acerto' THEN 1 END) as acertos,
                 COUNT(CASE WHEN ua.action_data = 'erro' THEN 1 END) as erros,
@@ -407,7 +445,7 @@ def get_all_user_evaluations():
             FROM users u
             LEFT JOIN user_actions ua ON u.username = ua.username 
             WHERE ua.action_type = 'avaliacao_automatica' OR ua.action_type IS NULL
-            GROUP BY u.username, u.email
+            GROUP BY u.username, u.name, u.email
             ORDER BY total_decisions DESC
         ''')
         
@@ -432,9 +470,45 @@ def get_all_user_evaluations():
         print(f"Erro ao obter avaliações: {e}")
         return []
 
+def get_formatted_credentials_for_auth():
+    """
+    NOVA FUNÇÃO: Obtém as credenciais formatadas especificamente para o streamlit-authenticator
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT username, name, email, password_hash FROM users")
+        users = cursor.fetchall()
+        conn.close()
+        
+        if not users:
+            return {
+                'usernames': {}
+            }
+        
+        # Formata no padrão do streamlit-authenticator
+        credentials = {
+            'usernames': {}
+        }
+        
+        for username, name, email, password_hash in users:
+            credentials['usernames'][username] = {
+                'name': name or username,  # Fallback para username se name for NULL
+                'password': password_hash,  # Já está hashada
+                'email': email
+            }
+        
+        return credentials
+        
+    except Exception as e:
+        print(f"Erro ao obter credenciais: {e}")
+        return {
+            'usernames': {}
+        }
+
 # Inicializa o banco quando o módulo é importado
 if __name__ == "__main__":
     init_database()
 else:
     init_database()
-

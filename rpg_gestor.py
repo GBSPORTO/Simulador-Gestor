@@ -1,3 +1,195 @@
+# rpg_gestor.py
+import streamlit as st
+import openai
+import time
+import streamlit_authenticator as stauth
+from streamlit_authenticator.utilities.hasher import Hasher
+import database as db
+from dotenv import load_dotenv, find_dotenv
+import os
+
+# --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
+@st.cache_resource
+def init_openai_client():
+    """Inicializa o cliente OpenAI de forma cached"""
+    load_dotenv(find_dotenv())
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    if not api_key:
+        try:
+            api_key = st.secrets["OPENAI_API_KEY"]
+        except (KeyError, FileNotFoundError):
+            st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
+            st.stop()
+    
+    return openai.Client(api_key=api_key)
+
+# --- CONSTANTES ---
+ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
+EVALUATION_MODEL = "gpt-4-turbo"
+
+# --- INICIALIZAÇÃO ---
+client = init_openai_client()
+
+# --- FUNÇÕES AUXILIARES CORRIGIDAS ---
+def get_formatted_credentials():
+    """
+    Obtém as credenciais do banco de dados e as formata corretamente
+    para o streamlit-authenticator
+    """
+    try:
+        # Busca todos os usuários do banco
+        conn = db.sqlite3.connect(db.DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT username, name, email, password_hash FROM users")
+        users = cursor.fetchall()
+        conn.close()
+        
+        if not users:
+            return {
+                'usernames': {}
+            }
+        
+        # Formata no padrão do streamlit-authenticator
+        credentials = {
+            'usernames': {}
+        }
+        
+        for username, name, email, password_hash in users:
+            credentials['usernames'][username] = {
+                'name': name,
+                'password': password_hash,  # Já está hashada
+                'email': email
+            }
+        
+        return credentials
+        
+    except Exception as e:
+        st.error(f"Erro ao obter credenciais: {e}")
+        return {
+            'usernames': {}
+        }
+
+def create_authenticator():
+    """Cria o autenticador com as credenciais atuais"""
+    credentials = get_formatted_credentials()
+    
+    config = {
+        'credentials': credentials,
+        'cookie': {
+            'name': 'mestre_gestor_cookie',
+            'key': 'mestre_gestor_key', 
+            'expiry_days': 30
+        }
+    }
+    
+    return stauth.Authenticate(
+        config['credentials'],
+        config['cookie']['name'],
+        config['cookie']['key'],
+        config['cookie']['expiry_days']
+    )
+
+def evaluate_user_response_background(username, conversation_history, client):
+    """
+    Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
+    como 'acerto' ou 'erro', registando-a no banco de dados.
+    Esta função roda em background sem mostrar feedback direto ao usuário.
+    """
+    try:
+        # Pega apenas as últimas 4 mensagens para contexto
+        history_for_eval = [
+            {"role": msg["role"], "content": msg["content"]} 
+            for msg in conversation_history[-4:]
+        ]
+
+        system_prompt = """
+        Você é um avaliador especialista em simulações de gestão. Sua tarefa é analisar a última resposta do usuário no contexto da conversa e classificá-la como 'acerto' ou 'erro'.
+        - 'acerto' significa que o usuário tomou uma decisão de gestão boa, lógica ou estratégica.
+        - 'erro' significa que a decisão foi fraca, ilógica ou prejudicial.
+        Responda APENAS com a palavra 'acerto' ou 'erro', em minúsculas e sem nenhuma outra explicação ou pontuação.
+        """
+        
+        eval_prompt = [{"role": "system", "content": system_prompt}] + history_for_eval
+
+        response = client.chat.completions.create(
+            model=EVALUATION_MODEL,
+            messages=eval_prompt,
+            max_tokens=10,
+            temperature=0.1
+        )
+        
+        evaluation = response.choices[0].message.content.strip().lower()
+        
+        if evaluation in ['acerto', 'erro']:
+            db.log_user_action(username, "avaliacao_automatica", evaluation)
+            return evaluation
+        else:
+            return None
+            
+    except Exception as e:
+        # Silencioso - não mostra erro para o usuário na simulação
+        return None
+
+def initialize_session_state(username):
+    """Inicializa o estado da sessão para o usuário"""
+    if "thread_id" not in st.session_state:
+        st.session_state.thread_id = db.get_or_create_thread_id(username, client)
+    if "messages" not in st.session_state:
+        st.session_state.messages = db.get_user_history(username)
+
+def handle_chat_interaction(username, prompt):
+    """Lida com a interação do chat"""
+    # Adiciona mensagem do usuário
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    db.add_message_to_history(username, "user", prompt)
+    
+    # Exibe mensagem do usuário
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Avalia a resposta do usuário em background (sem feedback visual)
+    try:
+        evaluate_user_response_background(username, st.session_state.messages, client)
+    except:
+        pass  # Silencioso - não afeta a experiência do usuário
+    
+    # Gera resposta do assistente
+    with st.chat_message("assistant"):
+        try:
+            # Primeiro, cria mensagem no thread
+            client.beta.threads.messages.create(
+                thread_id=st.session_state.thread_id,
+                role="user",
+                content=prompt
+            )
+            
+            # Depois, cria e executa a run
+            def stream_generator():
+                try:
+                    with client.beta.threads.runs.stream(
+                        thread_id=st.session_state.thread_id,
+                        assistant_id=ASSISTANT_ID,
+                    ) as stream:
+                        for text in stream.text_deltas:
+                            yield text
+                            time.sleep(0.01)
+                except Exception as e:
+                    yield f"❌ Erro na comunicação com o assistente: {str(e)}"
+                    
+            response = st.write_stream(stream_generator)
+            
+        except Exception as e:
+            st.error(f"❌ Erro ao comunicar com o assistente: {str(e)}")
+            st.info("🔧 Verifique se o ASSISTANT_ID está correto e se a API Key está configurada.")
+            return
+    
+    # Salva resposta do assistente
+    if response:
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        db.add_message_to_history(username, "assistant", response)
+
 def show_dashboard():
     """Exibe o dashboard com estatísticas de todos os usuários"""
     st.title("📊 Dashboard de Análise")
@@ -139,183 +331,28 @@ def show_dashboard():
         
     except Exception as e:
         st.error(f"Erro ao carregar dashboard: {e}")
-        st.info("🔧 Verifique se todas as tabelas necessárias estão criadas no banco de dados.")# rpg_gestor.py
-import streamlit as st
-import openai
-import time
-import streamlit_authenticator as stauth
-from streamlit_authenticator.utilities.hasher import Hasher
-import database as db
-from dotenv import load_dotenv, find_dotenv
-import os
+        st.info("🔧 Verifique se todas as tabelas necessárias estão criadas no banco de dados.")
 
-# --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
-@st.cache_resource
-def init_openai_client():
-    """Inicializa o cliente OpenAI de forma cached"""
-    load_dotenv(find_dotenv())
-    api_key = os.getenv("OPENAI_API_KEY")
-    
-    if not api_key:
-        try:
-            api_key = st.secrets["OPENAI_API_KEY"]
-        except (KeyError, FileNotFoundError):
-            st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
-            st.stop()
-    
-    return openai.Client(api_key=api_key)
-
-# --- CONSTANTES ---
-ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
-EVALUATION_MODEL = "gpt-4-turbo"  # Mantendo GPT-4 para avaliação consistente
-
-# --- INICIALIZAÇÃO ---
-client = init_openai_client()
-# db.init_db()
-
-# --- FUNÇÕES AUXILIARES ---
-def get_formatted_credentials():
+def register_user(name, username, email, password):
     """
-    Obtém as credenciais do banco de dados e as formata corretamente
-    para o streamlit-authenticator
+    Registra novo usuário no banco de dados
     """
     try:
-        raw_credentials = db.get_user_credentials()
+        # Usa a função create_user do database.py (corrigida)
+        success, message = db.create_user(username, email, password)
         
-        # Verifica se as credenciais estão no formato correto
-        if not raw_credentials or 'usernames' not in raw_credentials:
-            return {
-                'usernames': {},
-                'names': [],
-                'emails': []
-            }
+        if success:
+            # Atualiza o nome no registro (se necessário)
+            conn = db.sqlite3.connect(db.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET name = ? WHERE username = ?", (name, username))
+            conn.commit()
+            conn.close()
         
-        # Garante que a estrutura está correta
-        formatted_credentials = {
-            'usernames': raw_credentials.get('usernames', {}),
-            'names': list(raw_credentials.get('usernames', {}).keys()),
-            'emails': [user_data.get('email', '') for user_data in raw_credentials.get('usernames', {}).values()]
-        }
-        
-        return formatted_credentials
+        return success, message
         
     except Exception as e:
-        st.error(f"Erro ao obter credenciais: {e}")
-        return {
-            'usernames': {},
-            'names': [],
-            'emails': []
-        }
-
-def create_authenticator():
-    """Cria o autenticador com as credenciais atuais"""
-    credentials = get_formatted_credentials()
-    
-    return stauth.Authenticate(
-        credentials,
-        'mestre_gestor_cookie',
-        'mestre_gestor_key',
-        30
-    )
-
-def evaluate_user_response_background(username, conversation_history, client):
-    """
-    Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
-    como 'acerto' ou 'erro', registando-a no banco de dados.
-    Esta função roda em background sem mostrar feedback direto ao usuário.
-    """
-    try:
-        # Pega apenas as últimas 4 mensagens para contexto
-        history_for_eval = [
-            {"role": msg["role"], "content": msg["content"]} 
-            for msg in conversation_history[-4:]
-        ]
-
-        system_prompt = """
-        Você é um avaliador especialista em simulações de gestão. Sua tarefa é analisar a última resposta do usuário no contexto da conversa e classificá-la como 'acerto' ou 'erro'.
-        - 'acerto' significa que o usuário tomou uma decisão de gestão boa, lógica ou estratégica.
-        - 'erro' significa que a decisão foi fraca, ilógica ou prejudicial.
-        Responda APENAS com a palavra 'acerto' ou 'erro', em minúsculas e sem nenhuma outra explicação ou pontuação.
-        """
-        
-        eval_prompt = [{"role": "system", "content": system_prompt}] + history_for_eval
-
-        response = client.chat.completions.create(
-            model=EVALUATION_MODEL,
-            messages=eval_prompt,
-            max_tokens=10,
-            temperature=0.1
-        )
-        
-        evaluation = response.choices[0].message.content.strip().lower()
-        
-        if evaluation in ['acerto', 'erro']:
-            db.log_user_action(username, "avaliacao_automatica", evaluation)
-            return evaluation
-        else:
-            return None
-            
-    except Exception as e:
-        # Silencioso - não mostra erro para o usuário na simulação
-        return None
-
-def initialize_session_state(username):
-    """Inicializa o estado da sessão para o usuário"""
-    if "thread_id" not in st.session_state:
-        st.session_state.thread_id = db.get_or_create_thread_id(username, client)
-    if "messages" not in st.session_state:
-        st.session_state.messages = db.get_user_history(username)
-
-def handle_chat_interaction(username, prompt):
-    """Lida com a interação do chat"""
-    # Adiciona mensagem do usuário
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    db.add_message_to_history(username, "user", prompt)
-    
-    # Exibe mensagem do usuário
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    # Avalia a resposta do usuário em background (sem feedback visual)
-    try:
-        evaluate_user_response_background(username, st.session_state.messages, client)
-    except:
-        pass  # Silencioso - não afeta a experiência do usuário
-    
-    # Gera resposta do assistente
-    with st.chat_message("assistant"):
-        try:
-            # Primeiro, cria mensagem no thread
-            client.beta.threads.messages.create(
-                thread_id=st.session_state.thread_id,
-                role="user",
-                content=prompt
-            )
-            
-            # Depois, cria e executa a run
-            def stream_generator():
-                try:
-                    with client.beta.threads.runs.stream(
-                        thread_id=st.session_state.thread_id,
-                        assistant_id=ASSISTANT_ID,
-                    ) as stream:
-                        for text in stream.text_deltas:
-                            yield text
-                            time.sleep(0.01)
-                except Exception as e:
-                    yield f"❌ Erro na comunicação com o assistente: {str(e)}"
-                    
-            response = st.write_stream(stream_generator)
-            
-        except Exception as e:
-            st.error(f"❌ Erro ao comunicar com o assistente: {str(e)}")
-            st.info("🔧 Verifique se o ASSISTANT_ID está correto e se a API Key está configurada.")
-            return
-    
-    # Salva resposta do assistente
-    if response:
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        db.add_message_to_history(username, "assistant", response)
+        return False, f"Erro no registro: {str(e)}"
 
 # --- APLICAÇÃO PRINCIPAL ---
 def main():
@@ -325,20 +362,31 @@ def main():
         layout="wide"
     )
     
+    # Debug: Mostra informações sobre credenciais (apenas para admin)
+    if st.query_params.get("debug") == "true":
+        st.sidebar.markdown("### Debug Info")
+        creds = get_formatted_credentials()
+        st.sidebar.write(f"Usuários encontrados: {len(creds['usernames'])}")
+        st.sidebar.write(list(creds['usernames'].keys()))
+    
     # Recarrega credenciais se necessário
     if 'just_registered' in st.session_state and st.session_state['just_registered']:
         st.session_state['just_registered'] = False
         st.cache_resource.clear()
     
     # Cria autenticador
-    authenticator = create_authenticator()
+    try:
+        authenticator = create_authenticator()
+    except Exception as e:
+        st.error(f"Erro ao criar autenticador: {e}")
+        st.info("Verifique se o banco de dados está configurado corretamente.")
+        return
     
     # Verifica se o usuário está logado
     if 'authentication_status' in st.session_state and st.session_state['authentication_status']:
-        # USUÁRIO JÁ LOGADO - Remove todas as outras opções da sidebar
-        st.sidebar.empty()  # Limpa a sidebar
+        # USUÁRIO JÁ LOGADO
+        st.sidebar.empty()
         
-        # Adiciona apenas o logout e menu principal
         authenticator.logout('Logout', 'sidebar')
         st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
         st.sidebar.markdown("---")
@@ -372,7 +420,7 @@ def main():
             show_dashboard()
             
     else:
-        # USUÁRIO NÃO LOGADO - Limpa sidebar e mostra apenas opções de login
+        # USUÁRIO NÃO LOGADO
         st.sidebar.empty()
         
         choice = st.sidebar.selectbox(
@@ -387,26 +435,34 @@ def main():
             st.markdown("---")
             
             try:
-                name, authentication_status, username = authenticator.login('main')
+                name, authentication_status, username = authenticator.login(location='main')
+                
+                if authentication_status == True:
+                    # Usuário autenticado
+                    st.session_state.update({
+                        'name': name,
+                        'username': username,
+                        'authentication_status': authentication_status
+                    })
+                    st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {name}!")
+                    time.sleep(1)
+                    st.rerun()
+
+                elif authentication_status == False:
+                    st.error('❌ Usuário ou senha incorretos')
+                    
+                    # Debug: Ajuda para resolução de problemas
+                    with st.expander("🔧 Problemas com login?"):
+                        st.write("1. Verifique se o usuário e senha estão corretos")
+                        st.write("2. Certifique-se de que se registrou corretamente")
+                        st.write("3. Tente registrar novamente se necessário")
+                        
+                elif authentication_status == None:
+                    st.warning('⚠️ Por favor, insira seu usuário e senha')
+                    
             except Exception as e:
-                st.error("Erro no sistema de login. Tente novamente ou registre-se.")
-                return
-
-            if authentication_status:
-                # Usuário autenticado
-                st.session_state.update({
-                    'name': name,
-                    'username': username,
-                    'authentication_status': authentication_status
-                })
-                st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {name}!")
-                time.sleep(1)
-                st.rerun()
-
-            elif authentication_status is False:
-                st.error('❌ Usuário ou senha incorretos')
-            elif authentication_status is None:
-                st.warning('⚠️ Por favor, insira seu usuário e senha')
+                st.error(f"❌ Erro no sistema de login: {str(e)}")
+                st.info("🔧 Tente se registrar novamente ou contate o administrador.")
 
         # --- PÁGINA DE REGISTRO ---
         elif choice == '📝 Registrar':
@@ -437,19 +493,18 @@ def main():
                         st.error("❌ A senha deve ter pelo menos 6 caracteres.")
                     else:
                         try:
-                            hashed_password = Hasher([new_password]).generate()[0]
+                            success, message = register_user(new_name, new_username, new_email, new_password)
                             
-                            if db.add_user(new_username, new_name, new_email, hashed_password):
+                            if success:
                                 st.success("✅ Usuário registrado com sucesso! Redirecionando para o login...")
                                 st.session_state['just_registered'] = True
                                 time.sleep(2)
                                 st.rerun()
                             else:
-                                st.error("❌ Nome de usuário ou e-mail já existe.")
+                                st.error(f"❌ {message}")
                                 
                         except Exception as e:
                             st.error(f"❌ Ocorreu um erro durante o registro: {e}")
 
 if __name__ == "__main__":
     main()
-

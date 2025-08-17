@@ -7,6 +7,7 @@ from streamlit_authenticator.utilities.hasher import Hasher
 import database as db
 from dotenv import load_dotenv, find_dotenv
 import os
+import hashlib
 
 # --- INICIALIZAÇÃO E CONFIGURAÇÃO ---
 @st.cache_resource
@@ -31,50 +32,100 @@ EVALUATION_MODEL = "gpt-4-turbo"
 # --- INICIALIZAÇÃO ---
 client = init_openai_client()
 
-# --- FUNÇÕES AUXILIARES CORRIGIDAS ---
-def get_formatted_credentials():
+# --- FUNÇÕES DE AUTENTICAÇÃO MELHORADAS ---
+def manual_login(username, password):
     """
-    Obtém as credenciais do banco de dados e as formata corretamente
-    para o streamlit-authenticator (FUNÇÃO CORRIGIDA)
+    Sistema de login manual que funciona independente de cookies
     """
     try:
-        # Usa a nova função específica do database.py
-        return db.get_formatted_credentials_for_auth()
+        success, user_data = db.authenticate_user(username, password)
         
+        if success:
+            # Armazena dados do usuário no session_state
+            st.session_state.update({
+                'authentication_status': True,
+                'username': user_data['username'],
+                'name': user_data['name'],
+                'email': user_data['email'],
+                'is_admin': user_data.get('is_admin', False),
+                'manual_login': True
+            })
+            return True, user_data
+        else:
+            return False, user_data
+            
     except Exception as e:
-        st.error(f"Erro ao obter credenciais: {e}")
-        return {
-            'usernames': {}
-        }
+        return False, f"Erro no login: {str(e)}"
+
+def manual_logout():
+    """Logout manual limpando session_state"""
+    keys_to_clear = [
+        'authentication_status', 'username', 'name', 'email', 
+        'is_admin', 'manual_login', 'thread_id', 'messages'
+    ]
+    
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    st.rerun()
+
+def check_user_exists_for_registration(username, email):
+    """
+    Verifica se usuário já existe, mas com mensagens mais específicas
+    """
+    try:
+        user_exists, email_exists = db.check_user_exists(username, email)
+        
+        if user_exists and email_exists:
+            return True, "Este usuário e e-mail já estão registrados. Tente fazer login."
+        elif user_exists:
+            return True, f"O usuário '{username}' já existe. Escolha outro nome de usuário."
+        elif email_exists:
+            return True, f"O e-mail '{email}' já está registrado. Use outro e-mail ou faça login."
+        else:
+            return False, "OK"
+            
+    except Exception as e:
+        return True, f"Erro ao verificar usuário: {e}"
 
 def create_authenticator():
-    """Cria o autenticador com as credenciais atuais"""
+    """Cria o autenticador com configuração otimizada para múltiplos dispositivos"""
     credentials = get_formatted_credentials()
     
+    # Configuração com cookie mais específico
     config = {
         'credentials': credentials,
         'cookie': {
-            'name': 'mestre_gestor_cookie',
-            'key': 'mestre_gestor_key', 
-            'expiry_days': 30
+            'name': f'simulator_auth_{hashlib.md5("leadership_sim".encode()).hexdigest()[:8]}',
+            'key': 'leadership_simulator_secret_key_2024', 
+            'expiry_days': 7  # Reduzido para evitar problemas
         }
     }
     
-    return stauth.Authenticate(
-        config['credentials'],
-        config['cookie']['name'],
-        config['cookie']['key'],
-        config['cookie']['expiry_days']
-    )
-
-def evaluate_user_response_background(username, conversation_history, client):
-    """
-    Usa um modelo de IA para avaliar a última resposta do usuário e a classifica
-    como 'acerto' ou 'erro', registando-a no banco de dados.
-    Esta função roda em background sem mostrar feedback direto ao usuário.
-    """
     try:
-        # Pega apenas as últimas 4 mensagens para contexto
+        return stauth.Authenticate(
+            config['credentials'],
+            config['cookie']['name'],
+            config['cookie']['key'],
+            config['cookie']['expiry_days']
+        )
+    except Exception as e:
+        st.error(f"Erro ao criar autenticador: {e}")
+        return None
+
+def get_formatted_credentials():
+    """Obtém credenciais formatadas para o streamlit-authenticator"""
+    try:
+        return db.get_formatted_credentials_for_auth()
+    except Exception as e:
+        st.error(f"Erro ao obter credenciais: {e}")
+        return {'usernames': {}}
+
+# --- FUNÇÕES EXISTENTES (mantidas) ---
+def evaluate_user_response_background(username, conversation_history, client):
+    """Avaliação em background da resposta do usuário"""
+    try:
         history_for_eval = [
             {"role": msg["role"], "content": msg["content"]} 
             for msg in conversation_history[-4:]
@@ -105,7 +156,6 @@ def evaluate_user_response_background(username, conversation_history, client):
             return None
             
     except Exception as e:
-        # Silencioso - não mostra erro para o usuário na simulação
         return None
 
 def initialize_session_state(username):
@@ -117,31 +167,25 @@ def initialize_session_state(username):
 
 def handle_chat_interaction(username, prompt):
     """Lida com a interação do chat"""
-    # Adiciona mensagem do usuário
     st.session_state.messages.append({"role": "user", "content": prompt})
     db.add_message_to_history(username, "user", prompt)
     
-    # Exibe mensagem do usuário
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Avalia a resposta do usuário em background (sem feedback visual)
     try:
         evaluate_user_response_background(username, st.session_state.messages, client)
     except:
-        pass  # Silencioso - não afeta a experiência do usuário
+        pass
     
-    # Gera resposta do assistente
     with st.chat_message("assistant"):
         try:
-            # Primeiro, cria mensagem no thread
             client.beta.threads.messages.create(
                 thread_id=st.session_state.thread_id,
                 role="user",
                 content=prompt
             )
             
-            # Depois, cria e executa a run
             def stream_generator():
                 try:
                     with client.beta.threads.runs.stream(
@@ -161,13 +205,12 @@ def handle_chat_interaction(username, prompt):
             st.info("🔧 Verifique se o ASSISTANT_ID está correto e se a API Key está configurada.")
             return
     
-    # Salva resposta do assistente
     if response:
         st.session_state.messages.append({"role": "assistant", "content": response})
         db.add_message_to_history(username, "assistant", response)
 
 def show_dashboard():
-    """Exibe o dashboard com estatísticas de todos os usuários"""
+    """Dashboard com estatísticas"""
     st.title("📊 Dashboard de Análise")
     st.markdown("---")
     
@@ -178,7 +221,6 @@ def show_dashboard():
             st.info("📝 Ainda não há dados de avaliação disponíveis.")
             return
         
-        # Métricas gerais
         col1, col2, col3, col4 = st.columns(4)
         
         total_decisions = sum(user['total_decisions'] for user in user_stats)
@@ -196,8 +238,6 @@ def show_dashboard():
             st.metric("Usuários Ativos", len([u for u in user_stats if u['total_decisions'] > 0]))
         
         st.markdown("---")
-        
-        # Tabela de usuários
         st.subheader("📈 Performance por Usuário")
         
         import pandas as pd
@@ -218,7 +258,6 @@ def show_dashboard():
         df = pd.DataFrame(df_data)
         st.dataframe(df, use_container_width=True)
         
-        # Gráficos
         if len(df_data) > 0 and total_decisions > 0:
             st.markdown("---")
             st.subheader("📊 Visualizações")
@@ -246,28 +285,22 @@ def show_dashboard():
         
     except Exception as e:
         st.error(f"Erro ao carregar dashboard: {e}")
-        st.info("🔧 Verifique se todas as tabelas necessárias estão criadas no banco de dados.")
 
 def register_user(name, username, email, password):
-    """
-    Registra novo usuário no banco de dados (FUNÇÃO CORRIGIDA)
-    """
+    """Registra novo usuário"""
     try:
-        # Chama a função create_user com os parâmetros corretos
         success, message = db.create_user(
             username=username,
             email=email,
             password=password,
             is_admin=False,
-            name=name  # Passa o nome como parâmetro
+            name=name
         )
-        
         return success, message
-        
     except Exception as e:
         return False, f"Erro no registro: {str(e)}"
 
-# --- APLICAÇÃO PRINCIPAL ---
+# --- APLICAÇÃO PRINCIPAL REFORMULADA ---
 def main():
     st.set_page_config(
         page_title="Simulador de Casos",
@@ -275,60 +308,52 @@ def main():
         layout="wide"
     )
     
-    # Debug: Mostra informações sobre credenciais (apenas para admin)
-    if st.query_params.get("debug") == "true":
-        st.sidebar.markdown("### Debug Info")
-        creds = get_formatted_credentials()
-        st.sidebar.write(f"Usuários encontrados: {len(creds['usernames'])}")
-        st.sidebar.write(list(creds['usernames'].keys()))
+    # CSS para melhorar a aparência
+    st.markdown("""
+    <style>
+    .auth-info {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     
-    # Recarrega credenciais se necessário
-    if 'just_registered' in st.session_state and st.session_state['just_registered']:
-        st.session_state['just_registered'] = False
-        st.cache_resource.clear()
+    # Verifica se o usuário está logado (manual ou por cookie)
+    is_logged_in = st.session_state.get('authentication_status', False)
     
-    # Cria autenticador
-    try:
-        authenticator = create_authenticator()
-    except Exception as e:
-        st.error(f"Erro ao criar autenticador: {e}")
-        st.info("Verifique se o banco de dados está configurado corretamente.")
-        
-        # Botão para tentar corrigir o banco
-        if st.button("🔧 Tentar Corrigir Banco de Dados"):
-            try:
-                db.init_database()
-                st.success("✅ Banco de dados corrigido! Recarregue a página.")
-                st.rerun()
-            except Exception as fix_error:
-                st.error(f"Erro ao corrigir banco: {fix_error}")
-        return
-    
-    # Verifica se o usuário está logado
-    if 'authentication_status' in st.session_state and st.session_state['authentication_status']:
-        # USUÁRIO JÁ LOGADO
-        st.sidebar.empty()
-        
-        authenticator.logout('Logout', 'sidebar')
-        st.sidebar.title(f"Bem-vindo(a) {st.session_state['name']}!")
+    if is_logged_in:
+        # === USUÁRIO LOGADO ===
+        st.sidebar.title(f"👋 Olá, {st.session_state.get('name', 'Usuário')}!")
         st.sidebar.markdown("---")
         
-        # Menu principal após login
+        # Informações do usuário
+        with st.sidebar.expander("ℹ️ Informações da Conta"):
+            st.write(f"**Usuário:** {st.session_state.get('username', 'N/A')}")
+            st.write(f"**Nome:** {st.session_state.get('name', 'N/A')}")
+            st.write(f"**Email:** {st.session_state.get('email', 'N/A')}")
+        
+        # Botão de logout
+        if st.sidebar.button("🚪 Logout", use_container_width=True):
+            manual_logout()
+        
+        st.sidebar.markdown("---")
+        
+        # Menu principal
         page_choice = st.sidebar.selectbox(
-            "Escolha uma opção:",
+            "📋 Menu Principal:",
             ['🎯 Simulação', '📊 Dashboard'],
             key="main_menu"
         )
         
         if page_choice == '🎯 Simulação':
-            # Inicializa estado da sessão
             initialize_session_state(st.session_state['username'])
             
-            # Interface principal
             st.title("🎯 Simulador de Casos - Treinamento")
             st.markdown("---")
             
-            # Exibe histórico de mensagens
+            # Exibe histórico
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
@@ -340,77 +365,80 @@ def main():
         
         elif page_choice == '📊 Dashboard':
             show_dashboard()
-            
+    
     else:
-        # USUÁRIO NÃO LOGADO
-        st.sidebar.empty()
+        # === USUÁRIO NÃO LOGADO ===
         
-        choice = st.sidebar.selectbox(
-            "Navegação:",
-            ['🔐 Login', '📝 Registrar'],
-            key="auth_menu"
+        # Opção de usar autenticador tradicional ou login manual
+        auth_method = st.sidebar.radio(
+            "🔐 Método de Autenticação:",
+            ['Manual (Recomendado)', 'Automático (Cookies)'],
+            help="Manual funciona em qualquer dispositivo, Automático usa cookies"
         )
         
-        # --- PÁGINA DE LOGIN ---
-        if choice == '🔐 Login':
-            st.title("🔐 Login")
-            st.markdown("---")
+        if auth_method == 'Manual (Recomendado)':
+            # === LOGIN/REGISTRO MANUAL ===
             
-            try:
-                name, authentication_status, username = authenticator.login(location='main')
+            choice = st.sidebar.selectbox(
+                "Navegação:",
+                ['🔐 Login', '📝 Registrar'],
+                key="manual_auth_menu"
+            )
+            
+            if choice == '🔐 Login':
+                st.title("🔐 Login Manual")
+                st.markdown('<div class="auth-info">✨ Este método funciona em qualquer dispositivo!</div>', unsafe_allow_html=True)
+                st.markdown("---")
                 
-                if authentication_status == True:
-                    # Usuário autenticado
-                    st.session_state.update({
-                        'name': name,
-                        'username': username,
-                        'authentication_status': authentication_status
-                    })
-                    st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {name}!")
-                    time.sleep(1)
-                    st.rerun()
-
-                elif authentication_status == False:
-                    st.error('❌ Usuário ou senha incorretos')
+                with st.form("manual_login_form"):
+                    col1, col2 = st.columns([2, 1])
                     
-                    # Debug: Ajuda para resolução de problemas
-                    with st.expander("🔧 Problemas com login?"):
-                        st.write("1. Verifique se o usuário e senha estão corretos")
-                        st.write("2. Certifique-se de que se registrou corretamente")
-                        st.write("3. Tente registrar novamente se necessário")
+                    with col1:
+                        username = st.text_input("👤 Usuário", placeholder="Seu nome de usuário")
+                        password = st.text_input("🔒 Senha", type="password", placeholder="Sua senha")
+                    
+                    with col2:
+                        st.markdown("**🔧 Problemas?**")
+                        st.markdown("• Verifique usuário/senha")
+                        st.markdown("• Registre-se se necessário")
+                    
+                    login_button = st.form_submit_button("🚀 Entrar", use_container_width=True)
+                
+                if login_button:
+                    if username and password:
+                        with st.spinner("Verificando credenciais..."):
+                            success, result = manual_login(username, password)
                         
-                elif authentication_status == None:
-                    st.warning('⚠️ Por favor, insira seu usuário e senha')
-                    
-            except Exception as e:
-                st.error(f"❌ Erro no sistema de login: {str(e)}")
-                st.info("🔧 Tente se registrar novamente ou contate o administrador.")
-                
-                # Debug adicional
-                if st.button("🔍 Ver Detalhes do Erro"):
-                    st.code(str(e))
-
-        # --- PÁGINA DE REGISTRO ---
-        elif choice == '📝 Registrar':
-            st.title("📝 Crie sua Conta")
-            st.markdown("---")
+                        if success:
+                            st.success(f"✅ Login realizado com sucesso! Bem-vindo(a), {result['name']}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {result}")
+                    else:
+                        st.error("❌ Por favor, preencha usuário e senha.")
             
-            with st.form("register_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
+            elif choice == '📝 Registrar':
+                st.title("📝 Criar Nova Conta")
+                st.markdown('<div class="auth-info">🎯 Registre-se para começar a usar o simulador!</div>', unsafe_allow_html=True)
+                st.markdown("---")
                 
-                with col1:
-                    new_name = st.text_input("Nome Completo", placeholder="João Silva")
-                    new_username = st.text_input("Nome de Usuário", placeholder="joao_silva")
-                
-                with col2:
-                    new_email = st.text_input("E-mail", placeholder="joao@email.com")
+                with st.form("manual_register_form"):
+                    col1, col2 = st.columns(2)
                     
-                new_password = st.text_input("Senha", type="password", placeholder="Digite uma senha segura")
-                confirm_password = st.text_input("Confirme a Senha", type="password", placeholder="Confirme sua senha")
+                    with col1:
+                        new_name = st.text_input("📛 Nome Completo", placeholder="João Silva")
+                        new_username = st.text_input("👤 Nome de Usuário", placeholder="joao_silva", help="Será usado para login")
+                    
+                    with col2:
+                        new_email = st.text_input("📧 E-mail", placeholder="joao@email.com")
+                        new_password = st.text_input("🔒 Senha", type="password", placeholder="Mín. 6 caracteres")
+                    
+                    confirm_password = st.text_input("🔒 Confirmar Senha", type="password", placeholder="Digite a senha novamente")
+                    
+                    register_button = st.form_submit_button("🚀 Registrar", use_container_width=True)
                 
-                submitted = st.form_submit_button("🚀 Registrar", use_container_width=True)
-
-                if submitted:
+                if register_button:
                     if not all([new_name, new_email, new_username, new_password]):
                         st.error("❌ Por favor, preencha todos os campos.")
                     elif new_password != confirm_password:
@@ -418,23 +446,60 @@ def main():
                     elif len(new_password) < 6:
                         st.error("❌ A senha deve ter pelo menos 6 caracteres.")
                     else:
-                        try:
-                            success, message = register_user(new_name, new_username, new_email, new_password)
+                        # Verifica se usuário já existe
+                        with st.spinner("Verificando disponibilidade..."):
+                            exists, message = check_user_exists_for_registration(new_username, new_email)
+                        
+                        if exists:
+                            st.error(f"❌ {message}")
+                        else:
+                            with st.spinner("Criando conta..."):
+                                success, result = register_user(new_name, new_username, new_email, new_password)
                             
                             if success:
-                                st.success("✅ Usuário registrado com sucesso! Redirecionando para o login...")
-                                st.session_state['just_registered'] = True
+                                st.success("✅ Conta criada com sucesso! Agora você pode fazer login.")
+                                st.balloons()
                                 time.sleep(2)
                                 st.rerun()
                             else:
-                                st.error(f"❌ {message}")
-                                
-                        except Exception as e:
-                            st.error(f"❌ Ocorreu um erro durante o registro: {e}")
-                            
-                            # Debug adicional
-                            if st.button("🔍 Ver Detalhes do Erro de Registro"):
-                                st.code(str(e))
+                                st.error(f"❌ {result}")
+        
+        else:
+            # === AUTENTICAÇÃO POR COOKIES (TRADICIONAL) ===
+            st.title("🔐 Autenticação Automática")
+            st.markdown('<div class="auth-info">⚠️ Este método usa cookies. Pode não funcionar em alguns dispositivos/navegadores.</div>', unsafe_allow_html=True)
+            
+            try:
+                authenticator = create_authenticator()
+                
+                if authenticator:
+                    name, authentication_status, username = authenticator.login(location='main')
+                    
+                    if authentication_status == True:
+                        st.session_state.update({
+                            'name': name,
+                            'username': username,
+                            'authentication_status': authentication_status,
+                            'manual_login': False
+                        })
+                        st.success(f"✅ Login automático realizado! Bem-vindo(a), {name}!")
+                        time.sleep(1)
+                        st.rerun()
+                    
+                    elif authentication_status == False:
+                        st.error('❌ Usuário ou senha incorretos')
+                        st.info("💡 Experimente o **Login Manual** na barra lateral se continuar com problemas.")
+                    
+                    elif authentication_status == None:
+                        st.warning('⚠️ Por favor, insira seu usuário e senha')
+                
+                else:
+                    st.error("❌ Erro no sistema de autenticação")
+                    st.info("💡 Use o **Login Manual** na barra lateral.")
+            
+            except Exception as e:
+                st.error(f"❌ Erro na autenticação automática: {str(e)}")
+                st.info("💡 Recomendamos usar o **Login Manual** na barra lateral.")
 
 if __name__ == "__main__":
     main()

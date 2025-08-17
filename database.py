@@ -512,3 +512,267 @@ if __name__ == "__main__":
     init_database()
 else:
     init_database()
+# Funções adicionais para o database.py - adicionar ao final do arquivo existente
+
+def get_user_login_stats(username):
+    """Obtém estatísticas de login do usuário"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Busca informações do usuário
+        cursor.execute('''
+            SELECT username, name, email, created_at, 
+                   (SELECT COUNT(*) FROM conversations WHERE username = ?) as total_messages,
+                   (SELECT COUNT(*) FROM user_actions WHERE username = ?) as total_actions
+            FROM users 
+            WHERE username = ?
+        ''', (username, username, username))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {
+                'username': result[0],
+                'name': result[1] or result[0],
+                'email': result[2],
+                'created_at': result[3],
+                'total_messages': result[4],
+                'total_actions': result[5],
+                'exists': True
+            }
+        else:
+            return {'exists': False}
+            
+    except Exception as e:
+        print(f"Erro ao buscar stats de login: {e}")
+        return {'exists': False}
+
+def validate_user_session(username):
+    """Valida se o usuário ainda existe no banco (para sessões)"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username = ?", (username,))
+        exists = cursor.fetchone()[0] > 0
+        
+        conn.close()
+        return exists
+        
+    except Exception as e:
+        print(f"Erro ao validar sessão: {e}")
+        return False
+
+def log_user_login(username, login_method='manual'):
+    """Registra tentativa de login"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO user_actions (username, action_type, action_data)
+            VALUES (?, ?, ?)
+        ''', (username, 'login', login_method))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Erro ao registrar login: {e}")
+        return False
+
+def get_duplicate_check_detailed(username, email):
+    """
+    Verifica duplicatas com informações detalhadas
+    Retorna informações sobre qual campo está duplicado e dados existentes
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        result = {
+            'username_exists': False,
+            'email_exists': False,
+            'existing_username_data': None,
+            'existing_email_data': None
+        }
+        
+        # Verifica username
+        if username:
+            cursor.execute("SELECT username, name, email FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            username_data = cursor.fetchone()
+            if username_data:
+                result['username_exists'] = True
+                result['existing_username_data'] = {
+                    'username': username_data[0],
+                    'name': username_data[1],
+                    'email': username_data[2]
+                }
+        
+        # Verifica email
+        if email:
+            cursor.execute("SELECT username, name, email FROM users WHERE LOWER(email) = LOWER(?)", (email,))
+            email_data = cursor.fetchone()
+            if email_data:
+                result['email_exists'] = True
+                result['existing_email_data'] = {
+                    'username': email_data[0],
+                    'name': email_data[1], 
+                    'email': email_data[2]
+                }
+        
+        conn.close()
+        return result
+        
+    except Exception as e:
+        print(f"Erro na verificação detalhada: {e}")
+        return {
+            'username_exists': False,
+            'email_exists': False,
+            'existing_username_data': None,
+            'existing_email_data': None
+        }
+
+def clean_expired_threads():
+    """Remove threads antigas (opcional - para manutenção)"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Remove threads de usuários que não existem mais
+        cursor.execute('''
+            DELETE FROM user_threads 
+            WHERE username NOT IN (SELECT username FROM users)
+        ''')
+        
+        deleted = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if deleted > 0:
+            print(f"🧹 Removidos {deleted} threads órfãos")
+        
+        return deleted
+        
+    except Exception as e:
+        print(f"Erro na limpeza de threads: {e}")
+        return 0
+
+# Função melhorada para autenticação
+def authenticate_user_detailed(username, password):
+    """
+    Autenticação melhorada com mais detalhes e log
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        password_hash = hash_password(password)
+        
+        # Busca usuário
+        cursor.execute('''
+            SELECT username, name, email, is_admin, created_at
+            FROM users 
+            WHERE LOWER(username) = LOWER(?) AND password_hash = ?
+        ''', (username, password_hash))
+        
+        user = cursor.fetchone()
+        
+        if user:
+            # Log de login bem-sucedido
+            log_user_login(user[0], 'manual')
+            
+            user_data = {
+                'username': user[0],
+                'name': user[1] or user[0],
+                'email': user[2],
+                'is_admin': user[3] or False,
+                'created_at': user[4],
+                'login_success': True
+            }
+            
+            conn.close()
+            return True, user_data
+        else:
+            # Verifica se o usuário existe (para dar feedback específico)
+            cursor.execute("SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            user_exists = cursor.fetchone()[0] > 0
+            
+            conn.close()
+            
+            if user_exists:
+                return False, "Senha incorreta"
+            else:
+                return False, "Usuário não encontrado"
+            
+    except Exception as e:
+        print(f"Erro na autenticação detalhada: {e}")
+        return False, "Erro interno do servidor"
+
+# Adicionar esta função ao final do database.py
+def database_health_check():
+    """Verifica a saúde do banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        health = {
+            'database_exists': True,
+            'tables_exist': {},
+            'total_users': 0,
+            'total_conversations': 0,
+            'total_actions': 0,
+            'issues': []
+        }
+        
+        # Verifica tabelas
+        required_tables = ['users', 'conversations', 'user_actions', 'user_threads']
+        
+        for table in required_tables:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            exists = cursor.fetchone() is not None
+            health['tables_exist'][table] = exists
+            
+            if not exists:
+                health['issues'].append(f"Tabela '{table}' não encontrada")
+        
+        # Conta registros
+        if health['tables_exist'].get('users'):
+            cursor.execute("SELECT COUNT(*) FROM users")
+            health['total_users'] = cursor.fetchone()[0]
+        
+        if health['tables_exist'].get('conversations'):
+            cursor.execute("SELECT COUNT(*) FROM conversations")
+            health['total_conversations'] = cursor.fetchone()[0]
+        
+        if health['tables_exist'].get('user_actions'):
+            cursor.execute("SELECT COUNT(*) FROM user_actions")
+            health['total_actions'] = cursor.fetchone()[0]
+        
+        # Verifica integridade
+        if health['tables_exist'].get('users'):
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            required_columns = ['username', 'email', 'password_hash', 'name']
+            for col in required_columns:
+                if col not in columns:
+                    health['issues'].append(f"Coluna '{col}' não encontrada na tabela users")
+        
+        conn.close()
+        
+        health['is_healthy'] = len(health['issues']) == 0
+        
+        return health
+        
+    except Exception as e:
+        return {
+            'database_exists': False,
+            'error': str(e),
+            'is_healthy': False,
+            'issues': [f"Erro ao acessar banco: {e}"]
+        }

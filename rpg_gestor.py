@@ -35,35 +35,11 @@ client = init_openai_client()
 def get_formatted_credentials():
     """
     Obtém as credenciais do banco de dados e as formata corretamente
-    para o streamlit-authenticator
+    para o streamlit-authenticator (FUNÇÃO CORRIGIDA)
     """
     try:
-        # Busca todos os usuários do banco
-        conn = db.sqlite3.connect(db.DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT username, name, email, password_hash FROM users")
-        users = cursor.fetchall()
-        conn.close()
-        
-        if not users:
-            return {
-                'usernames': {}
-            }
-        
-        # Formata no padrão do streamlit-authenticator
-        credentials = {
-            'usernames': {}
-        }
-        
-        for username, name, email, password_hash in users:
-            credentials['usernames'][username] = {
-                'name': name,
-                'password': password_hash,  # Já está hashada
-                'email': email
-            }
-        
-        return credentials
+        # Usa a nova função específica do database.py
+        return db.get_formatted_credentials_for_auth()
         
     except Exception as e:
         st.error(f"Erro ao obter credenciais: {e}")
@@ -196,68 +172,7 @@ def show_dashboard():
     st.markdown("---")
     
     try:
-        # Tenta obter dados de avaliação - se a função não existir, cria dados de exemplo
-        try:
-            user_stats = db.get_all_user_evaluations()
-        except AttributeError:
-            # Se a função não existir no database.py, mostra instruções
-            st.warning("🔧 **Função do banco de dados não encontrada**")
-            st.info("""
-            Para o dashboard funcionar completamente, adicione esta função ao seu `database.py`:
-            
-            ```python
-            def get_all_user_evaluations():
-                try:
-                    cursor.execute('''
-                        SELECT 
-                            u.username, 
-                            u.name, 
-                            u.email,
-                            COUNT(CASE WHEN ua.action_data = 'acerto' THEN 1 END) as acertos,
-                            COUNT(CASE WHEN ua.action_data = 'erro' THEN 1 END) as erros,
-                            COUNT(ua.action_data) as total_decisions,
-                            MAX(ua.timestamp) as last_activity
-                        FROM users u
-                        LEFT JOIN user_actions ua ON u.username = ua.username 
-                        WHERE ua.action_type = 'avaliacao_automatica' OR ua.action_type IS NULL
-                        GROUP BY u.username, u.name, u.email
-                        ORDER BY total_decisions DESC
-                    ''')
-                    
-                    results = cursor.fetchall()
-                    user_stats = []
-                    
-                    for row in results:
-                        user_stats.append({
-                            'username': row[0],
-                            'name': row[1] or 'N/A',
-                            'email': row[2],
-                            'acertos': row[3] or 0,
-                            'erros': row[4] or 0, 
-                            'total_decisions': row[5] or 0,
-                            'last_activity': row[6] or 'Nunca'
-                        })
-                    
-                    return user_stats
-                    
-                except Exception as e:
-                    print(f"Erro ao obter avaliações: {e}")
-                    return []
-            ```
-            """)
-            
-            # Cria dados de exemplo para demonstração
-            user_stats = [
-                {
-                    'username': 'exemplo_user',
-                    'name': 'Usuário de Exemplo', 
-                    'email': 'exemplo@email.com',
-                    'acertos': 8,
-                    'erros': 2,
-                    'total_decisions': 10,
-                    'last_activity': '2024-01-15'
-                }
-            ]
+        user_stats = db.get_all_user_evaluations()
         
         if not user_stats:
             st.info("📝 Ainda não há dados de avaliação disponíveis.")
@@ -335,19 +250,17 @@ def show_dashboard():
 
 def register_user(name, username, email, password):
     """
-    Registra novo usuário no banco de dados
+    Registra novo usuário no banco de dados (FUNÇÃO CORRIGIDA)
     """
     try:
-        # Usa a função create_user do database.py (corrigida)
-        success, message = db.create_user(username, email, password)
-        
-        if success:
-            # Atualiza o nome no registro (se necessário)
-            conn = db.sqlite3.connect(db.DB_NAME)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET name = ? WHERE username = ?", (name, username))
-            conn.commit()
-            conn.close()
+        # Chama a função create_user com os parâmetros corretos
+        success, message = db.create_user(
+            username=username,
+            email=email,
+            password=password,
+            is_admin=False,
+            name=name  # Passa o nome como parâmetro
+        )
         
         return success, message
         
@@ -380,6 +293,15 @@ def main():
     except Exception as e:
         st.error(f"Erro ao criar autenticador: {e}")
         st.info("Verifique se o banco de dados está configurado corretamente.")
+        
+        # Botão para tentar corrigir o banco
+        if st.button("🔧 Tentar Corrigir Banco de Dados"):
+            try:
+                db.init_database()
+                st.success("✅ Banco de dados corrigido! Recarregue a página.")
+                st.rerun()
+            except Exception as fix_error:
+                st.error(f"Erro ao corrigir banco: {fix_error}")
         return
     
     # Verifica se o usuário está logado
@@ -463,6 +385,10 @@ def main():
             except Exception as e:
                 st.error(f"❌ Erro no sistema de login: {str(e)}")
                 st.info("🔧 Tente se registrar novamente ou contate o administrador.")
+                
+                # Debug adicional
+                if st.button("🔍 Ver Detalhes do Erro"):
+                    st.code(str(e))
 
         # --- PÁGINA DE REGISTRO ---
         elif choice == '📝 Registrar':
@@ -505,6 +431,10 @@ def main():
                                 
                         except Exception as e:
                             st.error(f"❌ Ocorreu um erro durante o registro: {e}")
+                            
+                            # Debug adicional
+                            if st.button("🔍 Ver Detalhes do Erro de Registro"):
+                                st.code(str(e))
 
 if __name__ == "__main__":
     main()

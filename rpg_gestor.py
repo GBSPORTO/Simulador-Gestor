@@ -5,6 +5,8 @@ import time
 import database as db
 from dotenv import load_dotenv, find_dotenv
 import os
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 @st.cache_resource
 def init_openai_client():
@@ -33,7 +35,6 @@ def handle_chat_interaction(username, prompt):
     db.add_message_to_history(username, "user", prompt)
     with st.chat_message("user"):
         st.markdown(prompt)
-    # (opcional) Avaliação automática desabilitada temporariamente.
 
     with st.chat_message("assistant"):
         try:
@@ -125,10 +126,8 @@ def main():
         page_icon="🎯",
         layout="wide"
     )
-    # --- NOVO FLUXO: SEM LOGIN ---
     st.sidebar.title("Bem-vindo!")
     st.sidebar.info("O login foi DESABILITADO temporariamente para livre acesso. Todas as funções estão disponíveis.")
-    # Nome de usuário genérico para a sessão (pode personalizar, se quiser)
     if "username" not in st.session_state:
         st.session_state["username"] = "visitante"
     if "name" not in st.session_state:

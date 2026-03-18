@@ -8,6 +8,9 @@ import os
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
+EVALUATION_MODEL = "gpt-4-turbo"
+
 @st.cache_resource
 def init_openai_client():
     load_dotenv(find_dotenv())
@@ -16,17 +19,26 @@ def init_openai_client():
         try:
             api_key = st.secrets["OPENAI_API_KEY"]
         except (KeyError, FileNotFoundError):
-            st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
-            st.stop()
+            return None
+    if not api_key:
+        return None
     return openai.Client(api_key=api_key)
 
-ASSISTANT_ID = "asst_rUreeoWsgwlPaxuJ7J7jYTBC"
-EVALUATION_MODEL = "gpt-4-turbo"
-client = init_openai_client()
+def get_client():
+    c = init_openai_client()
+    if c is None:
+        st.error("Chave de API da OpenAI não encontrada. Configure-a no .env ou nos segredos do Streamlit.")
+        st.stop()
+    return c
 
 def initialize_session_state(username):
     if "thread_id" not in st.session_state:
-        st.session_state.thread_id = db.get_or_create_thread_id(username, client)
+        try:
+            c = get_client()
+            st.session_state.thread_id = db.get_or_create_thread_id(username, c)
+        except Exception as e:
+            st.error(f"Erro ao inicializar sessão: {str(e)}")
+            st.stop()
     if "messages" not in st.session_state:
         st.session_state.messages = db.get_user_history(username)
 
@@ -38,14 +50,15 @@ def handle_chat_interaction(username, prompt):
 
     with st.chat_message("assistant"):
         try:
-            client.beta.threads.messages.create(
+            c = get_client()
+            c.beta.threads.messages.create(
                 thread_id=st.session_state.thread_id,
                 role="user",
                 content=prompt
             )
             def stream_generator():
                 try:
-                    with client.beta.threads.runs.stream(
+                    with c.beta.threads.runs.stream(
                         thread_id=st.session_state.thread_id,
                         assistant_id=ASSISTANT_ID,
                     ) as stream:
